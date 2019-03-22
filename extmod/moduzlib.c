@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "py/gc.h"
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mperrno.h"
@@ -206,9 +207,62 @@ error:
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_uzlib_decompress_obj, 1, 3, mod_uzlib_decompress);
 
 #if !MICROPY_ENABLE_DYNRUNTIME
+STATIC mp_obj_t mod_uzlib_gzip(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t data = args[0];
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(data, &bufinfo, MP_BUFFER_READ);
+    int len = bufinfo.len;
+
+    struct uzlib_comp *comp = m_new_obj(struct uzlib_comp);
+    memset(comp, 0, sizeof(*comp));
+
+    comp->dict_size = 32768;
+    comp->hash_bits = 12;
+    size_t hash_size = sizeof(uzlib_hash_entry_t) * (1 << comp->hash_bits);
+    comp->hash_table = gc_alloc(hash_size, false);
+    memset(comp->hash_table, 0, hash_size);
+
+    zlib_start_block(&comp->out);
+    uzlib_compress(comp, bufinfo.buf, len);
+    zlib_finish_block(&comp->out);
+
+    printf("compressed from %u to %u raw bytes\n", len, comp->out.outlen);
+
+    mp_uint_t dest_buf_size = (comp->out.outlen + 6 + (3*sizeof(int)));
+    byte *dest_buf = m_new(byte, dest_buf_size);
+
+    int i = 0;
+    dest_buf[i++] = 0x1f;
+    dest_buf[i++] = 0x8b;
+    dest_buf[i++] = 0x08;
+    dest_buf[i++] = 0x00; // FLG
+    int mtime = 0;
+    memcpy(&dest_buf[i], &mtime, sizeof(mtime));
+    i += sizeof(mtime);
+    dest_buf[i++] = 0x04; // XFL
+    dest_buf[i++] = 0x03; // OS
+
+    memcpy(&dest_buf[i], comp->out.outbuf, comp->out.outlen);
+    i += comp->out.outlen;
+
+    unsigned int crc = ~uzlib_crc32(bufinfo.buf, len, ~0);
+    memcpy(&dest_buf[i], &crc, sizeof(crc));
+    i += sizeof(crc);
+
+    memcpy(&dest_buf[i], &len, sizeof(len));
+    i += sizeof(len);
+
+    mp_obj_t res = mp_obj_new_bytearray_by_ref(dest_buf_size, dest_buf);
+    gc_free(comp->hash_table);
+    m_del_obj(struct uzlib_comp, comp);
+    return res;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mod_uzlib_gzip_obj, 1, 3, mod_uzlib_gzip);
+
 STATIC const mp_rom_map_elem_t mp_module_uzlib_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_uzlib) },
     { MP_ROM_QSTR(MP_QSTR_decompress), MP_ROM_PTR(&mod_uzlib_decompress_obj) },
+    { MP_ROM_QSTR(MP_QSTR_gzip), MP_ROM_PTR(&mod_uzlib_gzip_obj) },
     { MP_ROM_QSTR(MP_QSTR_DecompIO), MP_ROM_PTR(&decompio_type) },
 };
 
@@ -228,5 +282,7 @@ const mp_obj_module_t mp_module_uzlib = {
 #include "uzlib/tinfgzip.c"
 #include "uzlib/adler32.c"
 #include "uzlib/crc32.c"
+#include "uzlib/genlz77.c"
+#include "uzlib/defl_static.c"
 
 #endif // MICROPY_PY_UZLIB
