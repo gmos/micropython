@@ -5,8 +5,8 @@ from flashbdev import bdev
 def wifi():
     import ubinascii
     ap_if = network.WLAN(network.AP_IF)
-    essid = b"MicroPython-%s" % ubinascii.hexlify(ap_if.config("mac")[-3:])
-    ap_if.config(essid=essid, authmode=network.AUTH_WPA_WPA2_PSK, password=b"micropythoN")
+    essid = b"SMA-%s" % ubinascii.hexlify(ap_if.config("mac")[-3:]).upper()
+    ap_if.config(essid=essid, authmode=network.AUTH_WPA_WPA2_PSK, password=b"makesense")
 
 def check_bootsec():
     buf = bytearray(bdev.SEC_SIZE)
@@ -41,14 +41,17 @@ def setup():
     uos.mount(vfs, '/')
     with open("boot.py", "w") as f:
         f.write("""\
-# This file is executed on every boot (including wake-boot from deepsleep)
-#import esp
-#esp.osdebug(None)
+print('Sensemakers Amsterdam')
+import esp
+esp.osdebug(None)
 import uos, machine
 #uos.dupterm(None, 1) # disable REPL on UART(0)
 import gc
-#import webrepl
-#webrepl.start()
+import webrepl
+webrepl.start()
 gc.collect()
+from sma8266a import execfile
 """)
+    with open("webrepl_cfg.py", "w") as f:
+        f.write("PASS = 'makesense'\n")
     return vfs
