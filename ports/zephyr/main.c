@@ -41,6 +41,10 @@
 #include "lib/utils/pyexec.h"
 #include "lib/mp-readline/readline.h"
 
+#if MICROPY_VFS
+#include "extmod/vfs.h"
+#endif
+
 #ifdef TEST
 #include "lib/upytesthelper/upytesthelper.h"
 #include "lib/tinytest/tinytest.c"
@@ -53,7 +57,7 @@ static char heap[MICROPY_HEAP_SIZE];
 void init_zephyr(void) {
     // We now rely on CONFIG_NET_APP_SETTINGS to set up bootstrap
     // network addresses.
-#if 0
+    #if 0
     #ifdef CONFIG_NETWORKING
     if (net_if_get_default() == NULL) {
         // If there's no default networking interface,
@@ -74,7 +78,7 @@ void init_zephyr(void) {
     static struct in6_addr in6addr_my = {{{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}};
     net_if_ipv6_addr_add(net_if_get_default(), &in6addr_my, NET_ADDR_MANUAL, 0);
     #endif
-#endif
+    #endif
 }
 
 int real_main(void) {
@@ -132,21 +136,33 @@ void gc_collect(void) {
     //gc_dump_info();
 }
 
+#if !MICROPY_READER_VFS
 mp_lexer_t *mp_lexer_new_from_file(const char *filename) {
     mp_raise_OSError(ENOENT);
 }
+#endif
 
 mp_import_stat_t mp_import_stat(const char *path) {
+    #if MICROPY_VFS
+    return mp_vfs_import_stat(path);
+    #else
     return MP_IMPORT_STAT_NO_EXIST;
+    #endif
 }
 
 mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+    #if MICROPY_VFS
+    return mp_vfs_open(n_args, args, kwargs);
+    #else
     return mp_const_none;
+    #endif
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 NORETURN void nlr_jump_fail(void *val) {
-    while (1);
+    while (1) {
+        ;
+    }
 }
 
 #ifndef NDEBUG

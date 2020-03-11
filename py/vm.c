@@ -36,6 +36,8 @@
 #include "py/bc.h"
 #include "py/profile.h"
 
+// *FORMAT-OFF*
+
 #if 0
 #define TRACE(ip) printf("sp=%d ", (int)(sp - &code_state->state[0] + 1)); mp_bytecode_print2(ip, 1, code_state->fun_bc->const_table);
 #else
@@ -269,7 +271,7 @@ outer_dispatch_loop:
             MICROPY_VM_HOOK_INIT
 
             // If we have exception to inject, now that we finish setting up
-            // execution context, raise it. This works as if RAISE_VARARGS
+            // execution context, raise it. This works as if MP_BC_RAISE_OBJ
             // bytecode was executed.
             // Injecting exc into yield from generator is a special case,
             // handled by MP_BC_YIELD_FROM itself
