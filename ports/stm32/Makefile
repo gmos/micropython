@@ -87,7 +87,7 @@ CFLAGS_MCU_l4 = $(CFLAGS_CORTEX_M) -mtune=cortex-m4 -mcpu=cortex-m4
 CFLAGS_MCU_h7 = $(CFLAGS_CORTEX_M) -mtune=cortex-m7 -mcpu=cortex-m7
 CFLAGS_MCU_wb = $(CFLAGS_CORTEX_M) -mtune=cortex-m4 -mcpu=cortex-m4
 
-CFLAGS = $(INC) -Wall -Wpointer-arith -Werror -std=gnu99 -nostdlib $(CFLAGS_MOD) $(CFLAGS_EXTRA)
+CFLAGS += $(INC) -Wall -Wpointer-arith -Werror -std=gnu99 -nostdlib $(CFLAGS_MOD) $(CFLAGS_EXTRA)
 CFLAGS += -D$(CMSIS_MCU)
 CFLAGS += $(CFLAGS_MCU_$(MCU_SERIES))
 CFLAGS += $(COPT)
@@ -95,6 +95,15 @@ CFLAGS += -I$(BOARD_DIR)
 CFLAGS += -DSTM32_HAL_H='<stm32$(MCU_SERIES)xx_hal.h>'
 CFLAGS += -DMICROPY_HW_VTOR=$(TEXT0_ADDR)
 
+# Configure for nan-boxing object model if requested
+ifeq ($(NANBOX),1)
+CFLAGS += -DMP_CONFIGFILE='"mpconfigport_nanbox.h"'
+ifneq ($(MICROPY_FLOAT_IMPL),none)
+MICROPY_FLOAT_IMPL = double
+endif
+endif
+
+# Configure floating point support
 ifeq ($(MICROPY_FLOAT_IMPL),double)
 CFLAGS += -DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_DOUBLE
 else
@@ -408,6 +417,10 @@ ifneq ($(MICROPY_PY_WIZNET5K),0)
 WIZNET5K_DIR=drivers/wiznet5k
 INC += -I$(TOP)/$(WIZNET5K_DIR)
 CFLAGS_MOD += -DMICROPY_PY_WIZNET5K=$(MICROPY_PY_WIZNET5K) -D_WIZCHIP_=$(MICROPY_PY_WIZNET5K)
+ifeq ($(MICROPY_PY_LWIP),1)
+# When using MACRAW mode (with lwIP), maximum buffer space must be used for the raw socket
+CFLAGS_MOD += -DWIZCHIP_USE_MAX_BUFFER
+endif
 SRC_MOD += network_wiznet5k.c modnwwiznet5k.c
 SRC_MOD += $(addprefix $(WIZNET5K_DIR)/,\
 	ethernet/w$(MICROPY_PY_WIZNET5K)/w$(MICROPY_PY_WIZNET5K).c \
@@ -445,14 +458,30 @@ CFLAGS_MOD += -DMBEDTLS_CONFIG_FILE='"mbedtls/mbedtls_config.h"'
 SRC_MOD += mbedtls/mbedtls_port.c
 endif
 
+ifeq ($(MICROPY_PY_BLUETOOTH),1)
+
+SRC_C += modbluetooth_hci.c
+
+ifeq ($(MICROPY_BLUETOOTH_NIMBLE),1)
+ifeq ($(MICROPY_BLUETOOTH_BTSTACK),1)
+$(error Cannot enable both NimBLE and BTstack at the same time)
+endif
+endif
+
 ifeq ($(MICROPY_BLUETOOTH_NIMBLE),1)
 include $(TOP)/extmod/nimble/nimble.mk
 SRC_C += nimble.c
-SRC_C += nimble_hci_uart.c
-EXTMOD_SRC_C += extmod/modbluetooth_nimble.c
+endif
+
+ifeq ($(MICROPY_BLUETOOTH_BTSTACK),1)
+include $(TOP)/extmod/btstack/btstack.mk
+SRC_C += btstack.c
+endif
+
 ifeq ($(MICROPY_PY_NETWORK_CYW43),1)
 DRIVERS_SRC_C += drivers/cyw43/cywbt.c
 endif
+
 endif
 
 OBJ =
@@ -636,7 +665,7 @@ CMSIS_MCU_HDR = $(CMSIS_DIR)/$(CMSIS_MCU_LOWER).h
 modmachine.c: $(GEN_PLLFREQTABLE_HDR)
 $(GEN_PLLFREQTABLE_HDR): $(PLLVALUES) | $(HEADER_BUILD)
 	$(ECHO) "GEN $@"
-	$(Q)$(PYTHON) $(PLLVALUES) -c $(if $(filter $(MCU_SERIES),f7),--relax-pll48,) file:$(BOARD_DIR)/stm32$(MCU_SERIES)xx_hal_conf.h > $@
+	$(Q)$(PYTHON) $(PLLVALUES) -c -m $(MCU_SERIES) file:$(BOARD_DIR)/stm32$(MCU_SERIES)xx_hal_conf.h > $@
 
 $(BUILD)/modstm.o: $(GEN_STMCONST_HDR)
 # Use a pattern rule here so that make will only call make-stmconst.py once to
