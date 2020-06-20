@@ -78,8 +78,31 @@ STATIC mp_obj_t machine_wdt_feed(mp_obj_t self_in) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_wdt_feed_obj, machine_wdt_feed);
 
+STATIC mp_obj_t machine_wdt_disable(mp_obj_t self_in) {
+    (void)self_in;
+    mp_int_t rs_code = esp_task_wdt_delete(NULL);
+    if (rs_code != ESP_OK) {
+        mp_raise_OSError(rs_code);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_wdt_disable_obj, machine_wdt_disable);
+
+
+STATIC mp_obj_t machine_wdt_enable(mp_obj_t self_in) {
+    (void)self_in;
+    mp_int_t rs_code = esp_task_wdt_add(NULL);
+    if (rs_code != ESP_OK) {
+        mp_raise_OSError(rs_code);
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(machine_wdt_enable_obj, machine_wdt_enable);
+
 STATIC const mp_rom_map_elem_t machine_wdt_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_feed), MP_ROM_PTR(&machine_wdt_feed_obj) },
+    { MP_ROM_QSTR(MP_QSTR_disable), MP_ROM_PTR(&machine_wdt_disable_obj) },
+    { MP_ROM_QSTR(MP_QSTR_enable), MP_ROM_PTR(&machine_wdt_enable_obj) },
 };
 STATIC MP_DEFINE_CONST_DICT(machine_wdt_locals_dict, machine_wdt_locals_dict_table);
 
