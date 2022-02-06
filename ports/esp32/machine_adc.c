@@ -43,6 +43,7 @@ typedef struct _madc_obj_t {
 } madc_obj_t;
 
 STATIC const madc_obj_t madc_obj[] = {
+    #if CONFIG_IDF_TARGET_ESP32
     {{&machine_adc_type}, GPIO_NUM_36, ADC1_CHANNEL_0},
     {{&machine_adc_type}, GPIO_NUM_37, ADC1_CHANNEL_1},
     {{&machine_adc_type}, GPIO_NUM_38, ADC1_CHANNEL_2},
@@ -51,6 +52,24 @@ STATIC const madc_obj_t madc_obj[] = {
     {{&machine_adc_type}, GPIO_NUM_33, ADC1_CHANNEL_5},
     {{&machine_adc_type}, GPIO_NUM_34, ADC1_CHANNEL_6},
     {{&machine_adc_type}, GPIO_NUM_35, ADC1_CHANNEL_7},
+    #elif CONFIG_IDF_TARGET_ESP32C3
+    {{&machine_adc_type}, GPIO_NUM_0, ADC1_CHANNEL_0},
+    {{&machine_adc_type}, GPIO_NUM_1, ADC1_CHANNEL_1},
+    {{&machine_adc_type}, GPIO_NUM_2, ADC1_CHANNEL_2},
+    {{&machine_adc_type}, GPIO_NUM_3, ADC1_CHANNEL_3},
+    {{&machine_adc_type}, GPIO_NUM_4, ADC1_CHANNEL_4},
+    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    {{&machine_adc_type}, GPIO_NUM_1, ADC1_CHANNEL_0},
+    {{&machine_adc_type}, GPIO_NUM_2, ADC1_CHANNEL_1},
+    {{&machine_adc_type}, GPIO_NUM_3, ADC1_CHANNEL_2},
+    {{&machine_adc_type}, GPIO_NUM_4, ADC1_CHANNEL_3},
+    {{&machine_adc_type}, GPIO_NUM_5, ADC1_CHANNEL_4},
+    {{&machine_adc_type}, GPIO_NUM_6, ADC1_CHANNEL_5},
+    {{&machine_adc_type}, GPIO_NUM_7, ADC1_CHANNEL_6},
+    {{&machine_adc_type}, GPIO_NUM_8, ADC1_CHANNEL_7},
+    {{&machine_adc_type}, GPIO_NUM_9, ADC1_CHANNEL_8},
+    {{&machine_adc_type}, GPIO_NUM_10, ADC1_CHANNEL_9},
+    #endif
 };
 
 STATIC uint8_t adc_bit_width;
@@ -60,7 +79,11 @@ STATIC mp_obj_t madc_make_new(const mp_obj_type_t *type, size_t n_args, size_t n
 
     static int initialized = 0;
     if (!initialized) {
-        adc1_config_width(ADC_WIDTH_12Bit);
+        #if CONFIG_IDF_TARGET_ESP32S2
+        adc1_config_width(ADC_WIDTH_BIT_13);
+        #else
+        adc1_config_width(ADC_WIDTH_BIT_12);
+        #endif
         adc_bit_width = 12;
         initialized = 1;
     }
@@ -75,13 +98,13 @@ STATIC mp_obj_t madc_make_new(const mp_obj_type_t *type, size_t n_args, size_t n
         }
     }
     if (!self) {
-        mp_raise_ValueError("invalid Pin for ADC");
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid Pin for ADC"));
     }
     esp_err_t err = adc1_config_channel_atten(self->adc1_id, ADC_ATTEN_0db);
     if (err == ESP_OK) {
         return MP_OBJ_FROM_PTR(self);
     }
-    mp_raise_ValueError("Parameter Error");
+    mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
 }
 
 STATIC void madc_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
@@ -104,7 +127,7 @@ STATIC mp_obj_t madc_read(mp_obj_t self_in) {
     madc_obj_t *self = self_in;
     int val = adc1_get_raw(self->adc1_id);
     if (val == -1) {
-        mp_raise_ValueError("Parameter Error");
+        mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
     }
     return MP_OBJ_NEW_SMALL_INT(val);
 }
@@ -117,7 +140,7 @@ STATIC mp_obj_t madc_atten(mp_obj_t self_in, mp_obj_t atten_in) {
     if (err == ESP_OK) {
         return mp_const_none;
     }
-    mp_raise_ValueError("Parameter Error");
+    mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
 }
 MP_DEFINE_CONST_FUN_OBJ_2(madc_atten_obj, madc_atten);
 
@@ -125,9 +148,10 @@ STATIC mp_obj_t madc_width(mp_obj_t cls_in, mp_obj_t width_in) {
     adc_bits_width_t width = mp_obj_get_int(width_in);
     esp_err_t err = adc1_config_width(width);
     if (err != ESP_OK) {
-        mp_raise_ValueError("Parameter Error");
+        mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
     }
     switch (width) {
+        #if CONFIG_IDF_TARGET_ESP32
         case ADC_WIDTH_9Bit:
             adc_bit_width = 9;
             break;
@@ -140,6 +164,15 @@ STATIC mp_obj_t madc_width(mp_obj_t cls_in, mp_obj_t width_in) {
         case ADC_WIDTH_12Bit:
             adc_bit_width = 12;
             break;
+        #elif CONFIG_IDF_TARGET_ESP32S2
+        case ADC_WIDTH_BIT_13:
+            adc_bit_width = 13;
+            break;
+        #elif CONFIG_IDF_TARGET_ESP32S3
+        case ADC_WIDTH_BIT_12:
+            adc_bit_width = 12;
+            break;
+            #endif
         default:
             break;
     }
@@ -160,10 +193,16 @@ STATIC const mp_rom_map_elem_t madc_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_ATTN_6DB), MP_ROM_INT(ADC_ATTEN_6db) },
     { MP_ROM_QSTR(MP_QSTR_ATTN_11DB), MP_ROM_INT(ADC_ATTEN_11db) },
 
+    #if CONFIG_IDF_TARGET_ESP32
     { MP_ROM_QSTR(MP_QSTR_WIDTH_9BIT), MP_ROM_INT(ADC_WIDTH_9Bit) },
     { MP_ROM_QSTR(MP_QSTR_WIDTH_10BIT), MP_ROM_INT(ADC_WIDTH_10Bit) },
     { MP_ROM_QSTR(MP_QSTR_WIDTH_11BIT), MP_ROM_INT(ADC_WIDTH_11Bit) },
     { MP_ROM_QSTR(MP_QSTR_WIDTH_12BIT), MP_ROM_INT(ADC_WIDTH_12Bit) },
+    #elif CONFIG_IDF_TARGET_ESP32S2
+    { MP_ROM_QSTR(MP_QSTR_WIDTH_13BIT), MP_ROM_INT(ADC_WIDTH_BIT_13) },
+    #elif CONFIG_IDF_TARGET_ESP32S3
+    { MP_ROM_QSTR(MP_QSTR_WIDTH_12BIT), MP_ROM_INT(ADC_WIDTH_BIT_12) },
+    #endif
 };
 
 STATIC MP_DEFINE_CONST_DICT(madc_locals_dict, madc_locals_dict_table);

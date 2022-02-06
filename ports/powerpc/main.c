@@ -32,7 +32,7 @@
 #include "py/gc.h"
 #include "py/mperrno.h"
 #include "py/stackctrl.h"
-#include "lib/utils/pyexec.h"
+#include "shared/runtime/pyexec.h"
 
 void __stack_chk_fail(void);
 void __stack_chk_fail(void) {
@@ -65,7 +65,6 @@ int main(int argc, char **argv) {
     int stack_dummy;
     stack_top = (char *)&stack_dummy;
 
-    // microwatt has argc/r3 = 0 whereas QEMU has r3 set in head.S
     uart_init_ppc(argc);
 
     #if MICROPY_ENABLE_PYSTACK

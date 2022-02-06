@@ -33,6 +33,10 @@
 #include "py/objstr.h"
 #include "py/objtype.h"
 
+#if !MICROPY_ENABLE_DYNRUNTIME
+#error "dynruntime.h included in non-dynamic-module build."
+#endif
+
 #undef MP_ROM_QSTR
 #undef MP_OBJ_QSTR_VALUE
 #undef MP_OBJ_NEW_QSTR
@@ -77,6 +81,7 @@ static inline void *m_realloc_dyn(void *ptr, size_t new_num_bytes) {
 
 #define mp_type_type                        (*mp_fun_table.type_type)
 #define mp_type_str                         (*mp_fun_table.type_str)
+#define mp_type_tuple                       (*((mp_obj_base_t *)mp_const_empty_tuple)->type)
 #define mp_type_list                        (*mp_fun_table.type_list)
 #define mp_type_EOFError                    (*(mp_obj_type_t *)(mp_load_global(MP_QSTR_EOFError)))
 #define mp_type_IndexError                  (*(mp_obj_type_t *)(mp_load_global(MP_QSTR_IndexError)))
@@ -110,13 +115,14 @@ static inline void *m_realloc_dyn(void *ptr, size_t new_num_bytes) {
 #define mp_obj_cast_to_native_base(o, t)    (mp_obj_cast_to_native_base_dyn((o), (t)))
 #define mp_obj_get_int(o)                   (mp_fun_table.native_from_obj(o, MP_NATIVE_TYPE_INT))
 #define mp_obj_get_int_truncated(o)         (mp_fun_table.native_from_obj(o, MP_NATIVE_TYPE_UINT))
-#define mp_obj_str_get_str(s)               ((void *)mp_fun_table.native_from_obj(s, MP_NATIVE_TYPE_PTR))
+#define mp_obj_str_get_str(s)               (mp_obj_str_get_data_dyn((s), NULL))
 #define mp_obj_str_get_data(o, len)         (mp_obj_str_get_data_dyn((o), (len)))
 #define mp_get_buffer_raise(o, bufinfo, fl) (mp_fun_table.get_buffer_raise((o), (bufinfo), (fl)))
 #define mp_get_stream_raise(s, flags)       (mp_fun_table.get_stream_raise((s), (flags)))
 
 #define mp_obj_len(o)                       (mp_obj_len_dyn(o))
 #define mp_obj_subscr(base, index, val)     (mp_fun_table.obj_subscr((base), (index), (val)))
+#define mp_obj_get_array(o, len, items)     (mp_obj_get_array_dyn((o), (len), (items)))
 #define mp_obj_list_append(list, item)      (mp_fun_table.list_append((list), (item)))
 
 static inline mp_obj_t mp_obj_new_str_of_type_dyn(const mp_obj_type_t *type, const byte *data, size_t len) {
@@ -145,7 +151,9 @@ static inline mp_obj_t mp_obj_cast_to_native_base_dyn(mp_obj_t self_in, mp_const
 static inline void *mp_obj_str_get_data_dyn(mp_obj_t o, size_t *l) {
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(o, &bufinfo, MP_BUFFER_READ);
-    *l = bufinfo.len;
+    if (l != NULL) {
+        *l = bufinfo.len;
+    }
     return bufinfo.buf;
 }
 
@@ -157,9 +165,15 @@ static inline mp_obj_t mp_obj_len_dyn(mp_obj_t o) {
 /******************************************************************************/
 // General runtime functions
 
-#define mp_load_name(qst)           (mp_fun_table.load_name(qst))
-#define mp_load_global(qst)         (mp_fun_table.load_global(qst))
-#define mp_store_global(qst, obj)   (mp_fun_table.store_global((qst), (obj)))
+#define mp_load_name(qst)                 (mp_fun_table.load_name((qst)))
+#define mp_load_global(qst)               (mp_fun_table.load_global((qst)))
+#define mp_load_attr(base, attr)          (mp_fun_table.load_attr((base), (attr)))
+#define mp_load_method(base, attr, dest)  (mp_fun_table.load_method((base), (attr), (dest)))
+#define mp_load_super_method(attr, dest)  (mp_fun_table.load_super_method((attr), (dest)))
+#define mp_store_name(qst, obj)           (mp_fun_table.store_name((qst), (obj)))
+#define mp_store_global(qst, obj)         (mp_fun_table.store_global((qst), (obj)))
+#define mp_store_attr(base, attr, val)    (mp_fun_table.store_attr((base), (attr), (val)))
+
 #define mp_unary_op(op, obj)        (mp_fun_table.unary_op((op), (obj)))
 #define mp_binary_op(op, lhs, rhs)  (mp_fun_table.binary_op((op), (lhs), (rhs)))
 
@@ -187,6 +201,13 @@ static inline mp_obj_t mp_obj_len_dyn(mp_obj_t o) {
 #define MP_DYNRUNTIME_MAKE_FUNCTION(f) \
     (mp_make_function_from_raw_code((rc.fun_data = (f), &rc), MP_OBJ_NULL, MP_OBJ_NULL))
 
+#define mp_import_name(name, fromlist, level) \
+    (mp_fun_table.import_name((name), (fromlist), (level)))
+#define mp_import_from(module, name) \
+    (mp_fun_table.import_from((module), (name)))
+#define mp_import_all(module) \
+    (mp_fun_table.import_all((module))
+
 /******************************************************************************/
 // Exceptions
 
@@ -194,6 +215,7 @@ static inline mp_obj_t mp_obj_len_dyn(mp_obj_t o) {
 #define mp_obj_new_exception_arg1(e_type, arg)  (mp_obj_new_exception_arg1_dyn((e_type), (arg)))
 
 #define nlr_raise(o)                            (mp_raise_dyn(o))
+#define mp_raise_type_arg(type, arg)            (mp_raise_dyn(mp_obj_new_exception_arg1_dyn((type), (arg))))
 #define mp_raise_msg(type, msg)                 (mp_fun_table.raise_msg((type), (msg)))
 #define mp_raise_OSError(er)                    (mp_raise_OSError_dyn(er))
 #define mp_raise_NotImplementedError(msg)       (mp_raise_msg(&mp_type_NotImplementedError, (msg)))
@@ -231,5 +253,24 @@ static inline void mp_raise_OSError_dyn(int er) {
 #define mp_obj_new_float(f)         (mp_obj_new_float_from_d((f)))
 #define mp_obj_get_float(o)         (mp_obj_get_float_to_d((o)))
 #endif
+
+/******************************************************************************/
+// Inline function definitions.
+
+// *items may point inside a GC block
+static inline void mp_obj_get_array_dyn(mp_obj_t o, size_t *len, mp_obj_t **items) {
+    const mp_obj_type_t *type = mp_obj_get_type(o);
+    if (type == &mp_type_tuple) {
+        mp_obj_tuple_t *t = MP_OBJ_TO_PTR(o);
+        *len = t->len;
+        *items = &t->items[0];
+    } else if (type == &mp_type_list) {
+        mp_obj_list_t *l = MP_OBJ_TO_PTR(o);
+        *len = l->len;
+        *items = l->items;
+    } else {
+        mp_raise_TypeError("expected tuple/list");
+    }
+}
 
 #endif // MICROPY_INCLUDED_PY_DYNRUNTIME_H

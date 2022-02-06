@@ -30,14 +30,18 @@
 
 #include "py/obj.h"
 #include "py/runtime.h"
+#include "shared/runtime/pyexec.h"
 
 // This needs to be set before we include the RTOS headers
 #define USE_US_TIMER 1
 
+#include "extmod/machine_bitstream.h"
 #include "extmod/machine_mem.h"
 #include "extmod/machine_signal.h"
 #include "extmod/machine_pulse.h"
+#include "extmod/machine_pwm.h"
 #include "extmod/machine_i2c.h"
+#include "extmod/machine_spi.h"
 #include "modmachine.h"
 
 #include "xtirq.h"
@@ -49,8 +53,8 @@
 
 #if MICROPY_PY_MACHINE
 
-//#define MACHINE_WAKE_IDLE (0x01)
-//#define MACHINE_WAKE_SLEEP (0x02)
+// #define MACHINE_WAKE_IDLE (0x01)
+// #define MACHINE_WAKE_SLEEP (0x02)
 #define MACHINE_WAKE_DEEPSLEEP (0x04)
 
 extern const mp_obj_type_t esp_wdt_type;
@@ -63,7 +67,7 @@ STATIC mp_obj_t machine_freq(size_t n_args, const mp_obj_t *args) {
         // set
         mp_int_t freq = mp_obj_get_int(args[0]) / 1000000;
         if (freq != 80 && freq != 160) {
-            mp_raise_ValueError("frequency can only be either 80Mhz or 160MHz");
+            mp_raise_ValueError(MP_ERROR_TEXT("frequency can only be either 80Mhz or 160MHz"));
         }
         system_update_cpu_freq(freq);
         return mp_const_none;
@@ -76,6 +80,12 @@ STATIC mp_obj_t machine_reset(void) {
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(machine_reset_obj, machine_reset);
+
+STATIC mp_obj_t machine_soft_reset(void) {
+    pyexec_system_exit = PYEXEC_FORCED_EXIT;
+    mp_raise_type(&mp_type_SystemExit);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(machine_soft_reset_obj, machine_soft_reset);
 
 STATIC mp_obj_t machine_reset_cause(void) {
     return MP_OBJ_NEW_SMALL_INT(system_get_rst_info()->reason);
@@ -125,7 +135,7 @@ STATIC mp_obj_t machine_deepsleep(size_t n_args, const mp_obj_t *args) {
 
     // see if RTC.ALARM0 should wake the device
     if (pyb_rtc_alarm0_wake & MACHINE_WAKE_DEEPSLEEP) {
-        uint64_t t = pyb_rtc_get_us_since_2000();
+        uint64_t t = pyb_rtc_get_us_since_epoch();
         if (pyb_rtc_alarm0_expiry <= t) {
             sleep_us = 1; // alarm already expired so wake immediately
         } else {
@@ -392,6 +402,7 @@ STATIC const mp_rom_map_elem_t machine_module_globals_table[] = {
 
     { MP_ROM_QSTR(MP_QSTR_freq), MP_ROM_PTR(&machine_freq_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset), MP_ROM_PTR(&machine_reset_obj) },
+    { MP_ROM_QSTR(MP_QSTR_soft_reset), MP_ROM_PTR(&machine_soft_reset_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_cause), MP_ROM_PTR(&machine_reset_cause_obj) },
     { MP_ROM_QSTR(MP_QSTR_unique_id), MP_ROM_PTR(&machine_unique_id_obj) },
     { MP_ROM_QSTR(MP_QSTR_idle), MP_ROM_PTR(&machine_idle_obj) },
@@ -402,6 +413,10 @@ STATIC const mp_rom_map_elem_t machine_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_disable_irq), MP_ROM_PTR(&machine_disable_irq_obj) },
     { MP_ROM_QSTR(MP_QSTR_enable_irq), MP_ROM_PTR(&machine_enable_irq_obj) },
 
+    #if MICROPY_PY_MACHINE_BITSTREAM
+    { MP_ROM_QSTR(MP_QSTR_bitstream), MP_ROM_PTR(&machine_bitstream_obj) },
+    #endif
+
     { MP_ROM_QSTR(MP_QSTR_time_pulse_us), MP_ROM_PTR(&machine_time_pulse_us_obj) },
 
     { MP_ROM_QSTR(MP_QSTR_RTC), MP_ROM_PTR(&pyb_rtc_type) },
@@ -409,14 +424,16 @@ STATIC const mp_rom_map_elem_t machine_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_WDT), MP_ROM_PTR(&esp_wdt_type) },
     { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&pyb_pin_type) },
     { MP_ROM_QSTR(MP_QSTR_Signal), MP_ROM_PTR(&machine_signal_type) },
-    { MP_ROM_QSTR(MP_QSTR_PWM), MP_ROM_PTR(&pyb_pwm_type) },
+    { MP_ROM_QSTR(MP_QSTR_PWM), MP_ROM_PTR(&machine_pwm_type) },
     { MP_ROM_QSTR(MP_QSTR_ADC), MP_ROM_PTR(&machine_adc_type) },
     { MP_ROM_QSTR(MP_QSTR_UART), MP_ROM_PTR(&pyb_uart_type) },
     #if MICROPY_PY_MACHINE_I2C
-    { MP_ROM_QSTR(MP_QSTR_I2C), MP_ROM_PTR(&machine_i2c_type) },
+    { MP_ROM_QSTR(MP_QSTR_I2C), MP_ROM_PTR(&mp_machine_soft_i2c_type) },
+    { MP_ROM_QSTR(MP_QSTR_SoftI2C), MP_ROM_PTR(&mp_machine_soft_i2c_type) },
     #endif
     #if MICROPY_PY_MACHINE_SPI
     { MP_ROM_QSTR(MP_QSTR_SPI), MP_ROM_PTR(&machine_hspi_type) },
+    { MP_ROM_QSTR(MP_QSTR_SoftSPI), MP_ROM_PTR(&mp_machine_soft_spi_type) },
     #endif
 
     // wake abilities

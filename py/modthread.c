@@ -171,6 +171,11 @@ STATIC void *thread_entry(void *args_in) {
     mp_pystack_init(mini_pystack, &mini_pystack[128]);
     #endif
 
+    // The GC starts off unlocked on this thread.
+    ts.gc_lock_depth = 0;
+
+    ts.mp_pending_exception = MP_OBJ_NULL;
+
     // set locals and globals from the calling context
     mp_locals_set(args->dict_locals);
     mp_globals_set(args->dict_globals);
@@ -181,7 +186,6 @@ STATIC void *thread_entry(void *args_in) {
     mp_thread_start();
 
     // TODO set more thread-specific state here:
-    //  mp_pending_exception? (root pointer)
     //  cur_exception (root pointer)
 
     DEBUG_printf("[thread] start ts=%p args=%p stack=%p\n", &ts, &args, MP_STATE_THREAD(stack_top));
@@ -235,7 +239,7 @@ STATIC mp_obj_t mod_thread_start_new_thread(size_t n_args, const mp_obj_t *args)
     } else {
         // positional and keyword arguments
         if (mp_obj_get_type(args[2]) != &mp_type_dict) {
-            mp_raise_TypeError("expecting a dict for keyword args");
+            mp_raise_TypeError(MP_ERROR_TEXT("expecting a dict for keyword args"));
         }
         mp_map_t *map = &((mp_obj_dict_t *)MP_OBJ_TO_PTR(args[2]))->map;
         th_args = m_new_obj_var(thread_entry_args_t, mp_obj_t, pos_args_len + 2 * map->used);

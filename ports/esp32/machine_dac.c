@@ -27,14 +27,14 @@
 
 #include <stdio.h>
 
-#include "esp_log.h"
-
-#include "driver/gpio.h"
-#include "driver/dac.h"
-
 #include "py/runtime.h"
 #include "py/mphal.h"
 #include "modmachine.h"
+
+#if MICROPY_PY_MACHINE_DAC
+
+#include "driver/gpio.h"
+#include "driver/dac.h"
 
 typedef struct _mdac_obj_t {
     mp_obj_base_t base;
@@ -43,8 +43,13 @@ typedef struct _mdac_obj_t {
 } mdac_obj_t;
 
 STATIC const mdac_obj_t mdac_obj[] = {
+    #if CONFIG_IDF_TARGET_ESP32
     {{&machine_dac_type}, GPIO_NUM_25, DAC_CHANNEL_1},
     {{&machine_dac_type}, GPIO_NUM_26, DAC_CHANNEL_2},
+    #else
+    {{&machine_dac_type}, GPIO_NUM_17, DAC_CHANNEL_1},
+    {{&machine_dac_type}, GPIO_NUM_18, DAC_CHANNEL_2},
+    #endif
 };
 
 STATIC mp_obj_t mdac_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw,
@@ -60,7 +65,7 @@ STATIC mp_obj_t mdac_make_new(const mp_obj_type_t *type, size_t n_args, size_t n
         }
     }
     if (!self) {
-        mp_raise_ValueError("invalid Pin for DAC");
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid Pin for DAC"));
     }
 
     esp_err_t err = dac_output_enable(self->dac_id);
@@ -70,7 +75,7 @@ STATIC mp_obj_t mdac_make_new(const mp_obj_type_t *type, size_t n_args, size_t n
     if (err == ESP_OK) {
         return MP_OBJ_FROM_PTR(self);
     }
-    mp_raise_ValueError("Parameter Error");
+    mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
 }
 
 STATIC void mdac_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
@@ -82,14 +87,14 @@ STATIC mp_obj_t mdac_write(mp_obj_t self_in, mp_obj_t value_in) {
     mdac_obj_t *self = self_in;
     int value = mp_obj_get_int(value_in);
     if (value < 0 || value > 255) {
-        mp_raise_ValueError("Value out of range");
+        mp_raise_ValueError(MP_ERROR_TEXT("value out of range"));
     }
 
     esp_err_t err = dac_output_voltage(self->dac_id, value);
     if (err == ESP_OK) {
         return mp_const_none;
     }
-    mp_raise_ValueError("Parameter Error");
+    mp_raise_ValueError(MP_ERROR_TEXT("parameter error"));
 }
 MP_DEFINE_CONST_FUN_OBJ_2(mdac_write_obj, mdac_write);
 
@@ -106,3 +111,5 @@ const mp_obj_type_t machine_dac_type = {
     .make_new = mdac_make_new,
     .locals_dict = (mp_obj_t)&mdac_locals_dict,
 };
+
+#endif // MICROPY_PY_MACHINE_DAC

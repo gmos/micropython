@@ -62,7 +62,7 @@ def _makedirs(name, mode=0o777):
             os.mkdir(s)
             ret = True
         except OSError as e:
-            if e.args[0] != errno.EEXIST and e.args[0] != errno.EISDIR:
+            if e.errno != errno.EEXIST and e.errno != errno.EISDIR:
                 raise e
             ret = False
     return ret
@@ -150,8 +150,8 @@ def url_open(url):
 
         # MicroPython rawsocket module supports file interface directly
         s.write("GET /%s HTTP/1.0\r\nHost: %s:%s\r\n\r\n" % (urlpath, host, port))
-        line = s.readline()
-        protover, status, msg = line.split(None, 2)
+        l = s.readline()
+        protover, status, msg = l.split(None, 2)
         if status != b"200":
             if status == b"404" or status == b"301":
                 raise NotFoundError("Package not found")
@@ -192,9 +192,13 @@ def fatal(msg, exc=None):
 
 
 def install_pkg(pkg_spec, install_path):
-    data = get_pkg_metadata(pkg_spec)
+    package = pkg_spec.split("==")
+    data = get_pkg_metadata(package[0])
 
-    latest_ver = data["info"]["version"]
+    if len(package) == 1:
+        latest_ver = data["info"]["version"]
+    else:
+        latest_ver = package[1]
     packages = data["releases"][latest_ver]
     del data
     gc.collect()
@@ -260,6 +264,8 @@ def get_install_path():
     if install_path is None:
         # sys.path[0] is current module's path
         install_path = sys.path[1]
+        if install_path == ".frozen":
+            install_path = sys.path[2]
     install_path = expandhome(install_path)
     return install_path
 
@@ -279,11 +285,11 @@ upip - Simple PyPI package manager for MicroPython
 Usage: micropython -m upip install [-p <path>] <package>... | -r <requirements.txt>
 import upip; upip.install(package_or_list, [<path>])
 
-If <path> is not given, packages will be installed into sys.path[1]
-(can be set from MICROPYPATH environment variable, if current system
-supports that)."""
+If <path> isn't given, packages will be installed to sys.path[1], or
+sys.path[2] if the former is .frozen (path can be set from MICROPYPATH
+environment variable if supported)."""
     )
-    print("Current value of sys.path[1]:", sys.path[1])
+    print("Default install path:", get_install_path())
     print(
         """\
 

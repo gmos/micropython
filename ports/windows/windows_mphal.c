@@ -80,11 +80,11 @@ void mp_hal_stdio_mode_orig(void) {
 // the thread created for handling it might not be running yet so we'd miss the notification.
 BOOL WINAPI console_sighandler(DWORD evt) {
     if (evt == CTRL_C_EVENT) {
-        if (MP_STATE_VM(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
+        if (MP_STATE_MAIN_THREAD(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
             // this is the second time we are called, so die straight away
             exit(1);
         }
-        mp_keyboard_interrupt();
+        mp_sched_keyboard_interrupt();
         return TRUE;
     }
     return FALSE;
@@ -150,7 +150,7 @@ STATIC item_t keyCodeMap[] = {
     {VK_HOME, "[H"},
     {VK_END, "[F"},
     {VK_DELETE, "[3~"},
-    {0, ""} //sentinel
+    {0, ""} // sentinel
 };
 
 // likewise, but with Ctrl key down
@@ -159,7 +159,7 @@ STATIC item_t ctrlKeyCodeMap[] = {
     {VK_RIGHT, "f"},
     {VK_DELETE, "d"},
     {VK_BACK, "\x7F"},
-    {0, ""} //sentinel
+    {0, ""} // sentinel
 };
 
 STATIC const char *cur_esc_seq = NULL;
@@ -199,8 +199,8 @@ int mp_hal_stdin_rx_chr(void) {
     INPUT_RECORD rec;
     for (;;) {
         MP_THREAD_GIL_EXIT();
-        status = ReadConsoleInput(std_in, &rec, 1, &num_read)
-            MP_THREAD_GIL_ENTER();
+        status = ReadConsoleInput(std_in, &rec, 1, &num_read);
+        MP_THREAD_GIL_ENTER();
         if (!status || !num_read) {
             return CHAR_CTRL_C; // EOF, ctrl-D
         }
@@ -222,7 +222,7 @@ int mp_hal_stdin_rx_chr(void) {
 
 void mp_hal_stdout_tx_strn(const char *str, size_t len) {
     MP_THREAD_GIL_EXIT();
-    write(1, str, len);
+    write(STDOUT_FILENO, str, len);
     MP_THREAD_GIL_ENTER();
 }
 
@@ -254,4 +254,16 @@ mp_uint_t mp_hal_ticks_cpu(void) {
     #else
     return value.LowPart;
     #endif
+}
+
+uint64_t mp_hal_time_ns(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+}
+
+// TODO: POSIX et al. define usleep() as guaranteedly capable only of 1s sleep:
+// "The useconds argument shall be less than one million."
+void mp_hal_delay_ms(mp_uint_t ms) {
+    usleep((ms) * 1000);
 }

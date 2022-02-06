@@ -64,11 +64,9 @@ long heap_size = 1024 * 1024 * (sizeof(mp_uint_t) / 4);
 
 STATIC void stderr_print_strn(void *env, const char *str, size_t len) {
     (void)env;
-    MP_THREAD_GIL_EXIT();
-    ssize_t dummy = write(STDERR_FILENO, str, len);
-    MP_THREAD_GIL_ENTER();
+    ssize_t ret;
+    MP_HAL_RETRY_SYSCALL(ret, write(STDERR_FILENO, str, len), {});
     mp_uos_dupterm_tx_strn(str, len);
-    (void)dummy;
 }
 
 const mp_print_t mp_stderr_print = {NULL, stderr_print_strn};
@@ -135,7 +133,7 @@ STATIC int execute_from_lexer(int source_kind, const void *source, mp_parse_inpu
         // allow to print the parse tree in the coverage build
         if (mp_verbose_flag >= 3) {
             printf("----------------\n");
-            mp_parse_node_print(parse_tree.root, 0);
+            mp_parse_node_print(&mp_plat_print, parse_tree.root, 0);
             printf("----------------\n");
         }
         #endif
@@ -161,7 +159,7 @@ STATIC int execute_from_lexer(int source_kind, const void *source, mp_parse_inpu
 }
 
 #if MICROPY_USE_READLINE == 1
-#include "lib/mp-readline/readline.h"
+#include "shared/readline/readline.h"
 #else
 STATIC char *strjoin(const char *s1, int sep_char, const char *s2) {
     int l1 = strlen(s1);
@@ -343,6 +341,9 @@ STATIC int invalid_args(void) {
 STATIC void pre_process_options(int argc, char **argv) {
     for (int a = 1; a < argc; a++) {
         if (argv[a][0] == '-') {
+            if (strcmp(argv[a], "-c") == 0 || strcmp(argv[a], "-m") == 0) {
+                break; // Everything after this is a command/module and arguments for it
+            }
             if (strcmp(argv[a], "-h") == 0) {
                 print_help(argv);
                 exit(0);
@@ -389,7 +390,7 @@ STATIC void pre_process_options(int argc, char **argv) {
                         goto invalid_arg;
                     }
                     if (word_adjust) {
-                        heap_size = heap_size * BYTES_PER_WORD / 4;
+                        heap_size = heap_size * MP_BYTES_PER_OBJ_WORD / 4;
                     }
                     // If requested size too small, we'll crash anyway
                     if (heap_size < 700) {
@@ -402,6 +403,8 @@ STATIC void pre_process_options(int argc, char **argv) {
                 }
                 a++;
             }
+        } else {
+            break; // Not an option but a file
         }
     }
 }
@@ -448,7 +451,13 @@ MP_NOINLINE int main_(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     #endif
 
-    mp_stack_set_limit(40000 * (BYTES_PER_WORD / 4));
+    // Define a reasonable stack limit to detect stack overflow.
+    mp_uint_t stack_limit = 40000 * (sizeof(void *) / 4);
+    #if defined(__arm__) && !defined(__thumb2__)
+    // ARM (non-Thumb) architectures require more stack.
+    stack_limit *= 2;
+    #endif
+    mp_stack_set_limit(stack_limit);
 
     pre_process_options(argc, argv);
 
@@ -486,11 +495,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
     char *home = getenv("HOME");
     char *path = getenv("MICROPYPATH");
     if (path == NULL) {
-        #ifdef MICROPY_PY_SYS_PATH_DEFAULT
         path = MICROPY_PY_SYS_PATH_DEFAULT;
-        #else
-        path = "~/.micropython/lib:/usr/lib/micropython";
-        #endif
     }
     size_t path_num = 1; // [0] is for current dir (or base dir of the script)
     if (*path == PATHLIST_SEP_CHAR) {
@@ -533,7 +538,9 @@ MP_NOINLINE int main_(int argc, char **argv) {
     #if defined(MICROPY_UNIX_COVERAGE)
     {
         MP_DECLARE_CONST_FUN_OBJ_0(extra_coverage_obj);
-        mp_store_global(QSTR_FROM_STR_STATIC("extra_coverage"), MP_OBJ_FROM_PTR(&extra_coverage_obj));
+        MP_DECLARE_CONST_FUN_OBJ_0(extra_cpp_coverage_obj);
+        mp_store_global(MP_QSTR_extra_coverage, MP_OBJ_FROM_PTR(&extra_coverage_obj));
+        mp_store_global(MP_QSTR_extra_cpp_coverage, MP_OBJ_FROM_PTR(&extra_cpp_coverage_obj));
     }
     #endif
 
@@ -546,9 +553,9 @@ MP_NOINLINE int main_(int argc, char **argv) {
     // test_obj.attr = 42
     //
     // mp_obj_t test_class_type, test_class_instance;
-    // test_class_type = mp_obj_new_type(QSTR_FROM_STR_STATIC("TestClass"), mp_const_empty_tuple, mp_obj_new_dict(0));
-    // mp_store_name(QSTR_FROM_STR_STATIC("test_obj"), test_class_instance = mp_call_function_0(test_class_type));
-    // mp_store_attr(test_class_instance, QSTR_FROM_STR_STATIC("attr"), mp_obj_new_int(42));
+    // test_class_type = mp_obj_new_type(qstr_from_str("TestClass"), mp_const_empty_tuple, mp_obj_new_dict(0));
+    // mp_store_name(qstr_from_str("test_obj"), test_class_instance = mp_call_function_0(test_class_type));
+    // mp_store_attr(test_class_instance, qstr_from_str("attr"), mp_obj_new_int(42));
 
     /*
     printf("bytes:\n");
@@ -568,11 +575,10 @@ MP_NOINLINE int main_(int argc, char **argv) {
                 if (a + 1 >= argc) {
                     return invalid_args();
                 }
+                set_sys_argv(argv, a + 1, a); // The -c becomes first item of sys.argv, as in CPython
+                set_sys_argv(argv, argc, a + 2); // Then what comes after the command
                 ret = do_str(argv[a + 1]);
-                if (ret & FORCED_EXIT) {
-                    break;
-                }
-                a += 1;
+                break;
             } else if (strcmp(argv[a], "-m") == 0) {
                 if (a + 1 >= argc) {
                     return invalid_args();
@@ -592,7 +598,12 @@ MP_NOINLINE int main_(int argc, char **argv) {
 
                 mp_obj_t mod;
                 nlr_buf_t nlr;
-                bool subpkg_tried = false;
+
+                // Allocating subpkg_tried on the stack can lead to compiler warnings about this
+                // variable being clobbered when nlr is implemented using setjmp/longjmp.  Its
+                // value must be preserved across calls to setjmp/longjmp.
+                static bool subpkg_tried;
+                subpkg_tried = false;
 
             reimport:
                 if (nlr_push(&nlr) == 0) {
@@ -643,7 +654,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
                 break;
             }
 
-            // Set base dir of the script as first entry in sys.path
+            // Set base dir of the script as first entry in sys.path.
             char *p = strrchr(basedir, '/');
             path_items[0] = mp_obj_new_str_via_qstr(basedir, p - basedir);
             free(pathbuf);
@@ -659,7 +670,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
         inspect = true;
     }
     if (ret == NOTHING_EXECUTED || inspect) {
-        if (isatty(0)) {
+        if (isatty(0) || inspect) {
             prompt_read_history();
             ret = do_repl();
             prompt_write_history();
@@ -685,6 +696,11 @@ MP_NOINLINE int main_(int argc, char **argv) {
     }
     #endif
 
+    #if MICROPY_PY_BLUETOOTH
+    void mp_bluetooth_deinit(void);
+    mp_bluetooth_deinit();
+    #endif
+
     #if MICROPY_PY_THREAD
     mp_thread_deinit();
     #endif
@@ -701,7 +717,7 @@ MP_NOINLINE int main_(int argc, char **argv) {
     free(heap);
     #endif
 
-    //printf("total bytes = %d\n", m_get_total_bytes_allocated());
+    // printf("total bytes = %d\n", m_get_total_bytes_allocated());
     return ret & 0xff;
 }
 
@@ -717,6 +733,24 @@ uint mp_import_stat(const char *path) {
     }
     return MP_IMPORT_STAT_NO_EXIST;
 }
+
+#if MICROPY_PY_IO
+// Factory function for I/O stream classes, only needed if generic VFS subsystem isn't used.
+// Note: buffering and encoding are currently ignored.
+mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kwargs) {
+    enum { ARG_file, ARG_mode };
+    STATIC const mp_arg_t allowed_args[] = {
+        { MP_QSTR_file, MP_ARG_OBJ | MP_ARG_REQUIRED, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_mode, MP_ARG_OBJ, {.u_obj = MP_OBJ_NEW_QSTR(MP_QSTR_r)} },
+        { MP_QSTR_buffering, MP_ARG_INT, {.u_int = -1} },
+        { MP_QSTR_encoding, MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args, pos_args, kwargs, MP_ARRAY_SIZE(allowed_args), allowed_args, args);
+    return mp_vfs_posix_file_open(&mp_type_textio, args[ARG_file].u_obj, args[ARG_mode].u_obj);
+}
+MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
+#endif
 #endif
 
 void nlr_jump_fail(void *val) {

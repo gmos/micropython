@@ -6,7 +6,9 @@
 
 import sys, os, time, re, select
 import argparse
+import itertools
 import subprocess
+import tempfile
 
 sys.path.append("../tools")
 import pyboard
@@ -18,6 +20,9 @@ else:
     CPYTHON3 = os.getenv("MICROPY_CPYTHON3", "python3")
     MICROPYTHON = os.getenv("MICROPY_MICROPYTHON", "../ports/unix/micropython")
 
+# For diff'ing test output
+DIFF = os.getenv("MICROPY_DIFF", "diff -u")
+
 PYTHON_TRUTH = CPYTHON3
 
 INSTANCE_READ_TIMEOUT_S = 10
@@ -27,8 +32,10 @@ import sys
 class multitest:
     @staticmethod
     def flush():
-        if hasattr(sys.stdout, "flush"):
+        try:
             sys.stdout.flush()
+        except AttributeError:
+            pass
     @staticmethod
     def skip():
         print("SKIP")
@@ -38,6 +45,16 @@ class multitest:
     def next():
         print("NEXT")
         multitest.flush()
+    @staticmethod
+    def broadcast(msg):
+        print("BROADCAST", msg)
+        multitest.flush()
+    @staticmethod
+    def wait(msg):
+        msg = "BROADCAST " + msg
+        while True:
+            if sys.stdin.readline().rstrip() == msg:
+                return
     @staticmethod
     def globals(**gs):
         for g in gs:
@@ -57,6 +74,15 @@ class multitest:
 instance{}()
 multitest.flush()
 """
+
+# The btstack implementation on Unix generates some spurious output that we
+# can't control.
+IGNORE_OUTPUT_MATCHES = (
+    "libusb: error ",  # It tries to open devices that it doesn't have access to (libusb prints unconditionally).
+    "hci_transport_h2_libusb.c",  # Same issue. We enable LOG_ERROR in btstack.
+    "USB Path: ",  # Hardcoded in btstack's libusb transport.
+    "hci_number_completed_packet",  # Warning from btstack.
+)
 
 
 class PyInstance:
@@ -83,20 +109,25 @@ class PyInstance:
 
 
 class PyInstanceSubProcess(PyInstance):
-    def __init__(self, cmd):
-        self.cmd = cmd
+    def __init__(self, argv, env=None):
+        self.argv = argv
+        self.env = {n: v for n, v in (i.split("=") for i in env)} if env else None
         self.popen = None
         self.finished = True
 
     def __str__(self):
-        return self.cmd[0].rsplit("/")[-1]
+        return self.argv[0].rsplit("/")[-1]
 
     def run_script(self, script):
         output = b""
         err = None
         try:
             p = subprocess.run(
-                self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, input=script
+                self.argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                input=script,
+                env=self.env,
             )
             output = p.stdout
         except subprocess.CalledProcessError as er:
@@ -105,10 +136,12 @@ class PyInstanceSubProcess(PyInstance):
 
     def start_script(self, script):
         self.popen = subprocess.Popen(
-            self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            self.argv + ["-c", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=self.env,
         )
-        self.popen.stdin.write(script)
-        self.popen.stdin.close()
         self.finished = False
 
     def stop(self):
@@ -116,7 +149,7 @@ class PyInstanceSubProcess(PyInstance):
             self.popen.terminate()
 
     def readline(self):
-        sel = select.select([self.popen.stdout.raw], [], [], 0.1)
+        sel = select.select([self.popen.stdout.raw], [], [], 0.001)
         if not sel[0]:
             self.finished = self.popen.poll() is not None
             return None, None
@@ -126,6 +159,10 @@ class PyInstanceSubProcess(PyInstance):
             return None, None
         else:
             return str(out.rstrip(), "ascii"), None
+
+    def write(self, data):
+        self.popen.stdin.write(data)
+        self.popen.stdin.flush()
 
     def is_finished(self):
         return self.finished
@@ -137,7 +174,17 @@ class PyInstanceSubProcess(PyInstance):
 
 
 class PyInstancePyboard(PyInstance):
+    @staticmethod
+    def map_device_shortcut(device):
+        if device[0] == "a" and device[1:].isdigit():
+            return "/dev/ttyACM" + device[1:]
+        elif device[0] == "u" and device[1:].isdigit():
+            return "/dev/ttyUSB" + device[1:]
+        else:
+            return device
+
     def __init__(self, device):
+        device = self.map_device_shortcut(device)
         self.device = device
         self.pyb = pyboard.Pyboard(device)
         self.pyb.enter_raw_repl()
@@ -185,6 +232,9 @@ class PyInstancePyboard(PyInstance):
             err = None
         return str(out.rstrip(), "ascii"), err
 
+    def write(self, data):
+        self.pyb.serial.write(data)
+
     def is_finished(self):
         return self.finished
 
@@ -210,6 +260,7 @@ def trace_instance_output(instance_idx, line):
     if cmd_args.trace_output:
         t_ms = round((time.time() - trace_t0) * 1000)
         print("{:6} i{} :".format(t_ms, instance_idx), line)
+        sys.stdout.flush()
 
 
 def run_test_on_instances(test_file, num_instances, instances):
@@ -220,6 +271,9 @@ def run_test_on_instances(test_file, num_instances, instances):
     skip = False
     injected_globals = ""
     output = [[] for _ in range(num_instances)]
+
+    if cmd_args.trace_output:
+        print("TRACE {}:".format("|".join(str(i) for i in instances)))
 
     # Start all instances running, in order, waiting until they signal they are ready
     for idx in range(num_instances):
@@ -239,7 +293,7 @@ def run_test_on_instances(test_file, num_instances, instances):
                 time.sleep(0.1)
                 continue
             last_read_time = time.time()
-            if out is not None:
+            if out is not None and not any(m in out for m in IGNORE_OUTPUT_MATCHES):
                 trace_instance_output(idx, out)
                 if out.startswith("SET "):
                     injected_globals += out[4:] + "\n"
@@ -277,9 +331,14 @@ def run_test_on_instances(test_file, num_instances, instances):
                     continue
                 num_output += 1
                 last_read_time[idx] = time.time()
-                if out is not None:
+                if out is not None and not any(m in out for m in IGNORE_OUTPUT_MATCHES):
                     trace_instance_output(idx, out)
-                    output[idx].append(out)
+                    if out.startswith("BROADCAST "):
+                        for instance2 in instances:
+                            if instance2 is not instance:
+                                instance2.write(bytes(out, "ascii") + b"\r\n")
+                    else:
+                        output[idx].append(out)
                 if err is not None:
                     trace_instance_output(idx, err)
                     output[idx].append(err)
@@ -302,7 +361,23 @@ def run_test_on_instances(test_file, num_instances, instances):
     return error, skip, output_str
 
 
+def print_diff(a, b):
+    a_fd, a_path = tempfile.mkstemp(text=True)
+    b_fd, b_path = tempfile.mkstemp(text=True)
+    os.write(a_fd, a.encode())
+    os.write(b_fd, b.encode())
+    os.close(a_fd)
+    os.close(b_fd)
+    subprocess.run(DIFF.split(" ") + [a_path, b_path])
+    os.unlink(a_path)
+    os.unlink(b_path)
+
+
 def run_tests(test_files, instances_truth, instances_test):
+    skipped_tests = []
+    passed_tests = []
+    failed_tests = []
+
     for test_file, num_instances in test_files:
         instances_str = "|".join(str(instances_test[i]) for i in range(num_instances))
         print("{} on {}: ".format(test_file, instances_str), end="")
@@ -312,10 +387,6 @@ def run_tests(test_files, instances_truth, instances_test):
 
         # Run test on test instances
         error, skip, output_test = run_test_on_instances(test_file, num_instances, instances_test)
-
-        if cmd_args.show_output:
-            print("### TEST ###")
-            print(output_test, end="")
 
         if not skip:
             # Check if truth exists in a file, and read it in
@@ -328,25 +399,44 @@ def run_tests(test_files, instances_truth, instances_test):
                 _, _, output_truth = run_test_on_instances(
                     test_file, num_instances, instances_truth
                 )
-            if cmd_args.show_output:
+
+        if cmd_args.show_output:
+            print("### TEST ###")
+            print(output_test, end="")
+            if not skip:
                 print("### TRUTH ###")
                 print(output_truth, end="")
 
         # Print result of test
         if skip:
             print("skip")
+            skipped_tests.append(test_file)
         elif output_test == output_truth:
             print("pass")
+            passed_tests.append(test_file)
         else:
             print("FAIL")
+            failed_tests.append(test_file)
             if not cmd_args.show_output:
                 print("### TEST ###")
                 print(output_test, end="")
                 print("### TRUTH ###")
                 print(output_truth, end="")
+                print("### DIFF ###")
+                print_diff(output_truth, output_test)
 
         if cmd_args.show_output:
             print()
+
+    print("{} tests performed".format(len(skipped_tests) + len(passed_tests) + len(failed_tests)))
+    print("{} tests passed".format(len(passed_tests)))
+
+    if skipped_tests:
+        print("{} tests skipped: {}".format(len(skipped_tests), " ".join(skipped_tests)))
+    if failed_tests:
+        print("{} tests failed: {}".format(len(failed_tests), " ".join(failed_tests)))
+
+    return not failed_tests
 
 
 def main():
@@ -362,8 +452,18 @@ def main():
     cmd_parser.add_argument(
         "-i", "--instance", action="append", default=[], help="instance(s) to run the tests on"
     )
+    cmd_parser.add_argument(
+        "-p",
+        "--permutations",
+        type=int,
+        default=1,
+        help="repeat the test with this many permutations of the instance order",
+    )
     cmd_parser.add_argument("files", nargs="+", help="input test files")
     cmd_args = cmd_parser.parse_args()
+
+    # clear search path to make sure tests use only builtin modules and those in extmod
+    os.environ["MICROPYPATH"] = os.pathsep + "../extmod"
 
     test_files = prepare_test_file_list(cmd_args.files)
     max_instances = max(t[1] for t in test_files)
@@ -372,24 +472,41 @@ def main():
 
     instances_test = []
     for i in cmd_args.instance:
-        if i.startswith("exec:"):
-            instances_test.append(PyInstanceSubProcess([i[len("exec:") :]]))
-        elif i.startswith("pyb:"):
-            instances_test.append(PyInstancePyboard(i[len("pyb:") :]))
+        # Each instance arg is <cmd>,ENV=VAR,ENV=VAR...
+        i = i.split(",")
+        cmd = i[0]
+        env = i[1:]
+        if cmd.startswith("exec:"):
+            instances_test.append(PyInstanceSubProcess([cmd[len("exec:") :]], env))
+        elif cmd == "micropython":
+            instances_test.append(PyInstanceSubProcess([MICROPYTHON], env))
+        elif cmd == "cpython":
+            instances_test.append(PyInstanceSubProcess([CPYTHON3], env))
+        elif cmd.startswith("pyb:"):
+            instances_test.append(PyInstancePyboard(cmd[len("pyb:") :]))
         else:
-            print("unknown instance string: {}".format(i), file=sys.stderr)
+            print("unknown instance string: {}".format(cmd), file=sys.stderr)
             sys.exit(1)
 
     for _ in range(max_instances - len(instances_test)):
         instances_test.append(PyInstanceSubProcess([MICROPYTHON]))
 
+    all_pass = True
     try:
-        run_tests(test_files, instances_truth, instances_test)
+        for i, instances_test_permutation in enumerate(itertools.permutations(instances_test)):
+            if i >= cmd_args.permutations:
+                break
+
+            all_pass &= run_tests(test_files, instances_truth, instances_test_permutation)
+
     finally:
         for i in instances_truth:
             i.close()
         for i in instances_test:
             i.close()
+
+    if not all_pass:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

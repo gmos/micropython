@@ -43,7 +43,7 @@ Other commands:
 
 """
 
-import sys, re, subprocess
+import collections, sys, re, subprocess
 
 MAKE_FLAGS = ["-j3", "CFLAGS_EXTRA=-DNDEBUG"]
 
@@ -54,6 +54,7 @@ class PortData:
         self.dir = dir
         self.output = output
         self.make_flags = make_flags
+        self.needs_mpy_cross = dir not in ("bare-arm", "minimal")
 
 
 port_data = {
@@ -64,8 +65,9 @@ port_data = {
     "s": PortData("stm32", "stm32", "build-PYBV10/firmware.elf", "BOARD=PYBV10"),
     "c": PortData("cc3200", "cc3200", "build/WIPY/release/application.axf", "BTARGET=application"),
     "8": PortData("esp8266", "esp8266", "build-GENERIC/firmware.elf"),
-    "3": PortData("esp32", "esp32", "build-GENERIC/application.elf"),
+    "3": PortData("esp32", "esp32", "build-GENERIC/micropython.elf"),
     "r": PortData("nrf", "nrf", "build-pca10040/firmware.elf"),
+    "p": PortData("rp2", "rp2", "build-PICO/firmware.elf"),
     "d": PortData("samd", "samd", "build-ADAFRUIT_ITSYBITSY_M4_EXPRESS/firmware.elf"),
 }
 
@@ -97,7 +99,7 @@ def parse_port_list(args):
 
 
 def read_build_log(filename):
-    data = dict()
+    data = collections.OrderedDict()
     lines = []
     found_sizes = False
     with open(filename) as f:
@@ -121,13 +123,20 @@ def read_build_log(filename):
 def do_diff(args):
     """Compute the difference between firmware sizes."""
 
+    # Parse arguments.
+    error_threshold = None
+    if len(args) >= 2 and args[0] == "--error-threshold":
+        args.pop(0)
+        error_threshold = int(args.pop(0))
+
     if len(args) != 2:
-        print("usage: %s diff <out1> <out2>" % sys.argv[0])
+        print("usage: %s diff [--error-threshold <x>] <out1> <out2>" % sys.argv[0])
         sys.exit(1)
 
     data1 = read_build_log(args[0])
     data2 = read_build_log(args[1])
 
+    max_delta = None
     for key, value1 in data1.items():
         value2 = data2[key]
         for port in port_data.values():
@@ -156,6 +165,11 @@ def do_diff(args):
         if warn:
             warn = "[incl%s]" % warn
         print("%11s: %+5u %+.3f%% %s%s" % (name, delta, percent, board, warn))
+        max_delta = delta if max_delta is None else max(max_delta, delta)
+
+    if error_threshold is not None and max_delta is not None:
+        if max_delta > error_threshold:
+            sys.exit(1)
 
 
 def do_clean(args):
@@ -173,8 +187,9 @@ def do_build(args):
 
     ports = parse_port_list(args)
 
-    print("BUILDING MPY-CROSS")
-    syscmd("make", "-C", "mpy-cross", MAKE_FLAGS)
+    if any(port.needs_mpy_cross for port in ports):
+        print("BUILDING MPY-CROSS")
+        syscmd("make", "-C", "mpy-cross", MAKE_FLAGS)
 
     print("BUILDING PORTS")
     for port in ports:

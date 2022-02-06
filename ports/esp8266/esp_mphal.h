@@ -24,11 +24,12 @@
  * THE SOFTWARE.
  */
 
+#include "user_interface.h"
 #include "py/ringbuf.h"
-#include "lib/utils/interrupt_char.h"
+#include "shared/runtime/interrupt_char.h"
 #include "xtirq.h"
 
-void mp_keyboard_interrupt(void);
+void mp_sched_keyboard_interrupt(void);
 
 struct _mp_print_t;
 // Structure for UART-only output via mp_printf()
@@ -46,7 +47,10 @@ extern int uart_attached_to_dupterm;
 void mp_hal_init(void);
 void mp_hal_rtc_init(void);
 
-uint32_t mp_hal_ticks_us(void);
+__attribute__((always_inline)) static inline uint32_t mp_hal_ticks_us(void) {
+    return system_get_time();
+}
+
 __attribute__((always_inline)) static inline uint32_t mp_hal_ticks_cpu(void) {
     uint32_t ccount;
     __asm__ __volatile__ ("rsr %0,ccount" : "=a" (ccount));

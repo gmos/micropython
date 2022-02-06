@@ -27,12 +27,16 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#ifdef _MSC_VER
+#include <direct.h> // For mkdir
+#endif
 #include "py/mpconfig.h"
 
 #include "py/runtime.h"
@@ -46,26 +50,47 @@
 #define USE_STATFS 1
 #endif
 
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 25)
+#include <sys/random.h>
+#define _HAVE_GETRANDOM
+#endif
+#endif
+
+STATIC mp_obj_t mod_os_urandom(mp_obj_t num) {
+    mp_int_t n = mp_obj_get_int(num);
+    vstr_t vstr;
+    vstr_init_len(&vstr, n);
+    #ifdef _HAVE_GETRANDOM
+    RAISE_ERRNO(getrandom(vstr.buf, n, 0), errno);
+    #else
+    int fd = open("/dev/urandom", O_RDONLY);
+    RAISE_ERRNO(fd, errno);
+    RAISE_ERRNO(read(fd, vstr.buf, n), errno);
+    close(fd);
+    #endif
+    return mp_obj_new_str_from_vstr(&mp_type_bytes, &vstr);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_os_urandom_obj, mod_os_urandom);
+
 STATIC mp_obj_t mod_os_stat(mp_obj_t path_in) {
     struct stat sb;
     const char *path = mp_obj_str_get_str(path_in);
 
-    MP_THREAD_GIL_EXIT();
-    int res = stat(path, &sb);
-    MP_THREAD_GIL_ENTER();
-    RAISE_ERRNO(res, errno);
+    int res;
+    MP_HAL_RETRY_SYSCALL(res, stat(path, &sb), mp_raise_OSError(err));
 
     mp_obj_tuple_t *t = MP_OBJ_TO_PTR(mp_obj_new_tuple(10, NULL));
     t->items[0] = MP_OBJ_NEW_SMALL_INT(sb.st_mode);
-    t->items[1] = MP_OBJ_NEW_SMALL_INT(sb.st_ino);
-    t->items[2] = MP_OBJ_NEW_SMALL_INT(sb.st_dev);
-    t->items[3] = MP_OBJ_NEW_SMALL_INT(sb.st_nlink);
-    t->items[4] = MP_OBJ_NEW_SMALL_INT(sb.st_uid);
-    t->items[5] = MP_OBJ_NEW_SMALL_INT(sb.st_gid);
+    t->items[1] = mp_obj_new_int_from_uint(sb.st_ino);
+    t->items[2] = mp_obj_new_int_from_uint(sb.st_dev);
+    t->items[3] = mp_obj_new_int_from_uint(sb.st_nlink);
+    t->items[4] = mp_obj_new_int_from_uint(sb.st_uid);
+    t->items[5] = mp_obj_new_int_from_uint(sb.st_gid);
     t->items[6] = mp_obj_new_int_from_uint(sb.st_size);
-    t->items[7] = MP_OBJ_NEW_SMALL_INT(sb.st_atime);
-    t->items[8] = MP_OBJ_NEW_SMALL_INT(sb.st_mtime);
-    t->items[9] = MP_OBJ_NEW_SMALL_INT(sb.st_ctime);
+    t->items[7] = mp_obj_new_int_from_uint(sb.st_atime);
+    t->items[8] = mp_obj_new_int_from_uint(sb.st_mtime);
+    t->items[9] = mp_obj_new_int_from_uint(sb.st_ctime);
     return MP_OBJ_FROM_PTR(t);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_os_stat_obj, mod_os_stat);
@@ -92,10 +117,8 @@ STATIC mp_obj_t mod_os_statvfs(mp_obj_t path_in) {
     STRUCT_STATVFS sb;
     const char *path = mp_obj_str_get_str(path_in);
 
-    MP_THREAD_GIL_EXIT();
-    int res = STATVFS(path, &sb);
-    MP_THREAD_GIL_ENTER();
-    RAISE_ERRNO(res, errno);
+    int res;
+    MP_HAL_RETRY_SYSCALL(res, STATVFS(path, &sb), mp_raise_OSError(err));
 
     mp_obj_tuple_t *t = MP_OBJ_TO_PTR(mp_obj_new_tuple(10, NULL));
     t->items[0] = MP_OBJ_NEW_SMALL_INT(sb.f_bsize);
@@ -310,6 +333,7 @@ STATIC const mp_rom_map_elem_t mp_module_os_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_uos) },
     { MP_ROM_QSTR(MP_QSTR_errno), MP_ROM_PTR(&mod_os_errno_obj) },
     { MP_ROM_QSTR(MP_QSTR_stat), MP_ROM_PTR(&mod_os_stat_obj) },
+    { MP_ROM_QSTR(MP_QSTR_urandom), MP_ROM_PTR(&mod_os_urandom_obj) },
     #if MICROPY_PY_OS_STATVFS
     { MP_ROM_QSTR(MP_QSTR_statvfs), MP_ROM_PTR(&mod_os_statvfs_obj) },
     #endif

@@ -29,12 +29,12 @@
 
 #include "py/runtime.h"
 #include "py/mphal.h"
+#include "extmod/modnetwork.h"
 #include "spi.h"
-#include "modnetwork.h"
 
 #if MICROPY_PY_WIZNET5K && MICROPY_PY_LWIP
 
-#include "lib/netutils/netutils.h"
+#include "shared/netutils/netutils.h"
 #include "drivers/wiznet5k/ethernet/socket.h"
 #include "lwip/err.h"
 #include "lwip/dns.h"
@@ -269,7 +269,7 @@ STATIC mp_obj_t wiznet5k_make_new(const mp_obj_type_t *type, size_t n_args, size
     mp_hal_pin_obj_t rst = pin_find(args[2]);
 
     // Access the existing object, if it has been constructed with the same hardware interface
-    if (wiznet5k_obj.base.type == &mod_network_nic_type_wiznet5k) {
+    if (wiznet5k_obj.base.type == (mp_obj_type_t *)&mod_network_nic_type_wiznet5k) {
         if (!(wiznet5k_obj.spi == spi && wiznet5k_obj.cs == cs && wiznet5k_obj.rst == rst
               && wiznet5k_obj.netif.flags != 0)) {
             wiznet5k_deinit();
@@ -277,7 +277,7 @@ STATIC mp_obj_t wiznet5k_make_new(const mp_obj_type_t *type, size_t n_args, size
     }
 
     // Init the wiznet5k object
-    wiznet5k_obj.base.type = &mod_network_nic_type_wiznet5k;
+    wiznet5k_obj.base.type = (mp_obj_type_t *)&mod_network_nic_type_wiznet5k;
     wiznet5k_obj.cris_state = 0;
     wiznet5k_obj.spi = spi;
     wiznet5k_obj.cs = cs;
@@ -377,7 +377,7 @@ STATIC mp_obj_t wiznet5k_status(size_t n_args, const mp_obj_t *args) {
         }
     }
 
-    mp_raise_ValueError("unknown config param");
+    mp_raise_ValueError(MP_ERROR_TEXT("unknown config param"));
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wiznet5k_status_obj, 1, 2, wiznet5k_status);
 
@@ -387,7 +387,7 @@ STATIC mp_obj_t wiznet5k_config(size_t n_args, const mp_obj_t *args, mp_map_t *k
     if (kwargs->used == 0) {
         // Get config value
         if (n_args != 2) {
-            mp_raise_TypeError("must query one param");
+            mp_raise_TypeError(MP_ERROR_TEXT("must query one param"));
         }
 
         switch (mp_obj_str_get_qstr(args[1])) {
@@ -397,12 +397,12 @@ STATIC mp_obj_t wiznet5k_config(size_t n_args, const mp_obj_t *args, mp_map_t *k
                 return mp_obj_new_bytes(buf, 6);
             }
             default:
-                mp_raise_ValueError("unknown config param");
+                mp_raise_ValueError(MP_ERROR_TEXT("unknown config param"));
         }
     } else {
         // Set config value(s)
         if (n_args != 1) {
-            mp_raise_TypeError("can't specify pos and kw args");
+            mp_raise_TypeError(MP_ERROR_TEXT("can't specify pos and kw args"));
         }
 
         for (size_t i = 0; i < kwargs->alloc; ++i) {
@@ -424,7 +424,7 @@ STATIC mp_obj_t wiznet5k_config(size_t n_args, const mp_obj_t *args, mp_map_t *k
                         break;
                     }
                     default:
-                        mp_raise_ValueError("unknown config param");
+                        mp_raise_ValueError(MP_ERROR_TEXT("unknown config param"));
                 }
             }
         }

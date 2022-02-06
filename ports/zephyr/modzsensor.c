@@ -35,7 +35,7 @@
 
 typedef struct _mp_obj_sensor_t {
     mp_obj_base_t base;
-    struct device *dev;
+    const struct device *dev;
 } mp_obj_sensor_t;
 
 STATIC mp_obj_t sensor_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
@@ -44,7 +44,7 @@ STATIC mp_obj_t sensor_make_new(const mp_obj_type_t *type, size_t n_args, size_t
     o->base.type = type;
     o->dev = device_get_binding(mp_obj_str_get_str(args[0]));
     if (o->dev == NULL) {
-        mp_raise_ValueError("dev not found");
+        mp_raise_ValueError(MP_ERROR_TEXT("dev not found"));
     }
     return MP_OBJ_FROM_PTR(o);
 }
@@ -143,4 +143,4 @@ const mp_obj_module_t mp_module_zsensor = {
     .globals = (mp_obj_dict_t *)&mp_module_zsensor_globals,
 };
 
-#endif //MICROPY_PY_UHASHLIB
+#endif // MICROPY_PY_UHASHLIB

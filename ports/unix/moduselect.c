@@ -29,6 +29,10 @@
 
 #if MICROPY_PY_USELECT_POSIX
 
+#if MICROPY_PY_USELECT
+#error "Can't have both MICROPY_PY_USELECT and MICROPY_PY_USELECT_POSIX."
+#endif
+
 #include <stdio.h>
 #include <errno.h>
 #include <poll.h>
@@ -40,7 +44,6 @@
 #include "py/objtuple.h"
 #include "py/mphal.h"
 #include "py/mpthread.h"
-#include "fdfile.h"
 
 #define DEBUG 0
 
@@ -189,10 +192,8 @@ STATIC int poll_poll_internal(size_t n_args, const mp_obj_t *args) {
 
     self->flags = flags;
 
-    MP_THREAD_GIL_EXIT();
-    int n_ready = poll(self->entries, self->len, timeout);
-    MP_THREAD_GIL_ENTER();
-    RAISE_ERRNO(n_ready, errno);
+    int n_ready;
+    MP_HAL_RETRY_SYSCALL(n_ready, poll(self->entries, self->len, timeout), mp_raise_OSError(err));
     return n_ready;
 }
 

@@ -73,6 +73,7 @@ STATIC mp_obj_t gen_wrap_call(mp_obj_t self_in, size_t n_args, size_t n_kw, cons
 
 const mp_obj_type_t mp_type_gen_wrap = {
     { &mp_type_type },
+    .flags = MP_TYPE_FLAG_BINDS_SELF,
     .name = MP_QSTR_generator,
     .call = gen_wrap_call,
     .unary_op = mp_generic_unary_op,
@@ -126,6 +127,7 @@ STATIC mp_obj_t native_gen_wrap_call(mp_obj_t self_in, size_t n_args, size_t n_k
 
 const mp_obj_type_t mp_type_native_gen_wrap = {
     { &mp_type_type },
+    .flags = MP_TYPE_FLAG_BINDS_SELF,
     .name = MP_QSTR_generator,
     .call = native_gen_wrap_call,
     .unary_op = mp_generic_unary_op,
@@ -150,14 +152,15 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
     mp_check_self(mp_obj_is_type(self_in, &mp_type_gen_instance));
     mp_obj_gen_instance_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->code_state.ip == 0) {
-        // Trying to resume already stopped generator
-        *ret_val = MP_OBJ_STOP_ITERATION;
+        // Trying to resume an already stopped generator.
+        // This is an optimised "raise StopIteration(None)".
+        *ret_val = mp_const_none;
         return MP_VM_RETURN_NORMAL;
     }
 
     // Ensure the generator cannot be reentered during execution
     if (self->pend_exc == MP_OBJ_NULL) {
-        mp_raise_ValueError("generator already executing");
+        mp_raise_ValueError(MP_ERROR_TEXT("generator already executing"));
     }
 
     #if MICROPY_PY_GENERATOR_PEND_THROW
@@ -170,7 +173,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
     // If the generator is started, allow sending a value.
     if (self->code_state.sp == self->code_state.state - 1) {
         if (send_value != mp_const_none) {
-            mp_raise_TypeError("can't send non-None value to a just-started generator");
+            mp_raise_TypeError(MP_ERROR_TEXT("can't send non-None value to a just-started generator"));
         }
     } else {
         *self->code_state.sp = send_value;
@@ -210,6 +213,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
             // subsequent next() may re-execute statements after last yield
             // again and again, leading to side effects.
             self->code_state.ip = 0;
+            // This is an optimised "raise StopIteration(*ret_val)".
             *ret_val = *self->code_state.sp;
             break;
 
@@ -225,7 +229,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
             *ret_val = self->code_state.state[0];
             // PEP479: if StopIteration is raised inside a generator it is replaced with RuntimeError
             if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(*ret_val)), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
-                *ret_val = mp_obj_new_exception_msg(&mp_type_RuntimeError, "generator raised StopIteration");
+                *ret_val = mp_obj_new_exception_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("generator raised StopIteration"));
             }
             break;
         }
@@ -234,16 +238,20 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
     return ret_kind;
 }
 
-STATIC mp_obj_t gen_resume_and_raise(mp_obj_t self_in, mp_obj_t send_value, mp_obj_t throw_value) {
+STATIC mp_obj_t gen_resume_and_raise(mp_obj_t self_in, mp_obj_t send_value, mp_obj_t throw_value, bool raise_stop_iteration) {
     mp_obj_t ret;
     switch (mp_obj_gen_resume(self_in, send_value, throw_value, &ret)) {
         case MP_VM_RETURN_NORMAL:
         default:
-            // Optimize return w/o value in case generator is used in for loop
-            if (ret == mp_const_none || ret == MP_OBJ_STOP_ITERATION) {
-                return MP_OBJ_STOP_ITERATION;
+            // A normal return is a StopIteration, either raise it or return
+            // MP_OBJ_STOP_ITERATION as an optimisation.
+            if (ret == mp_const_none) {
+                ret = MP_OBJ_NULL;
+            }
+            if (raise_stop_iteration) {
+                mp_raise_StopIteration(ret);
             } else {
-                nlr_raise(mp_obj_new_exception_arg1(&mp_type_StopIteration, ret));
+                return mp_make_stop_iteration(ret);
             }
 
         case MP_VM_RETURN_YIELD:
@@ -255,16 +263,11 @@ STATIC mp_obj_t gen_resume_and_raise(mp_obj_t self_in, mp_obj_t send_value, mp_o
 }
 
 STATIC mp_obj_t gen_instance_iternext(mp_obj_t self_in) {
-    return gen_resume_and_raise(self_in, mp_const_none, MP_OBJ_NULL);
+    return gen_resume_and_raise(self_in, mp_const_none, MP_OBJ_NULL, false);
 }
 
 STATIC mp_obj_t gen_instance_send(mp_obj_t self_in, mp_obj_t send_value) {
-    mp_obj_t ret = gen_resume_and_raise(self_in, send_value, MP_OBJ_NULL);
-    if (ret == MP_OBJ_STOP_ITERATION) {
-        mp_raise_type(&mp_type_StopIteration);
-    } else {
-        return ret;
-    }
+    return gen_resume_and_raise(self_in, send_value, MP_OBJ_NULL, true);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_2(gen_instance_send_obj, gen_instance_send);
 
@@ -286,12 +289,7 @@ STATIC mp_obj_t gen_instance_throw(size_t n_args, const mp_obj_t *args) {
         exc = args[2];
     }
 
-    mp_obj_t ret = gen_resume_and_raise(args[0], mp_const_none, exc);
-    if (ret == MP_OBJ_STOP_ITERATION) {
-        mp_raise_type(&mp_type_StopIteration);
-    } else {
-        return ret;
-    }
+    return gen_resume_and_raise(args[0], mp_const_none, exc, true);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(gen_instance_throw_obj, 2, 4, gen_instance_throw);
 
@@ -299,7 +297,7 @@ STATIC mp_obj_t gen_instance_close(mp_obj_t self_in) {
     mp_obj_t ret;
     switch (mp_obj_gen_resume(self_in, mp_const_none, MP_OBJ_FROM_PTR(&mp_const_GeneratorExit_obj), &ret)) {
         case MP_VM_RETURN_YIELD:
-            mp_raise_msg(&mp_type_RuntimeError, "generator ignored GeneratorExit");
+            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("generator ignored GeneratorExit"));
 
         // Swallow GeneratorExit (== successful close), and re-raise any other
         case MP_VM_RETURN_EXCEPTION:
@@ -320,7 +318,7 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(gen_instance_close_obj, gen_instance_close);
 STATIC mp_obj_t gen_instance_pend_throw(mp_obj_t self_in, mp_obj_t exc_in) {
     mp_obj_gen_instance_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->pend_exc == MP_OBJ_NULL) {
-        mp_raise_ValueError("generator already executing");
+        mp_raise_ValueError(MP_ERROR_TEXT("generator already executing"));
     }
     mp_obj_t prev = self->pend_exc;
     self->pend_exc = exc_in;

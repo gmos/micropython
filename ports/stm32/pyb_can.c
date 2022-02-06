@@ -140,9 +140,41 @@ STATIC void pyb_can_print(const mp_print_t *print, mp_obj_t self_in, mp_print_ki
     }
 }
 
+STATIC uint32_t pyb_can_get_source_freq() {
+    uint32_t can_kern_clk = 0;
+
+    // Find CAN kernel clock
+    #if defined(STM32H7)
+    switch (__HAL_RCC_GET_FDCAN_SOURCE()) {
+        case RCC_FDCANCLKSOURCE_HSE:
+            can_kern_clk = HSE_VALUE;
+            break;
+        case RCC_FDCANCLKSOURCE_PLL: {
+            PLL1_ClocksTypeDef pll1_clocks;
+            HAL_RCCEx_GetPLL1ClockFreq(&pll1_clocks);
+            can_kern_clk = pll1_clocks.PLL1_Q_Frequency;
+            break;
+        }
+        case RCC_FDCANCLKSOURCE_PLL2: {
+            PLL2_ClocksTypeDef pll2_clocks;
+            HAL_RCCEx_GetPLL2ClockFreq(&pll2_clocks);
+            can_kern_clk = pll2_clocks.PLL2_Q_Frequency;
+            break;
+        }
+    }
+    #else // F4 and F7 and assume other MCUs too.
+    // CAN1/CAN2/CAN3 on APB1 use GetPCLK1Freq, alternatively use the following:
+    // can_kern_clk = ((HSE_VALUE / osc_config.PLL.PLLM ) * osc_config.PLL.PLLN) /
+    //  (osc_config.PLL.PLLQ * clk_init.AHBCLKDivider * clk_init.APB1CLKDivider);
+    can_kern_clk = HAL_RCC_GetPCLK1Freq();
+    #endif
+
+    return can_kern_clk;
+}
+
 // init(mode, extframe=False, prescaler=100, *, sjw=1, bs1=6, bs2=8)
 STATIC mp_obj_t pyb_can_init_helper(pyb_can_obj_t *self, size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
-    enum { ARG_mode, ARG_extframe, ARG_prescaler, ARG_sjw, ARG_bs1, ARG_bs2, ARG_auto_restart };
+    enum { ARG_mode, ARG_extframe, ARG_prescaler, ARG_sjw, ARG_bs1, ARG_bs2, ARG_auto_restart, ARG_baudrate, ARG_sample_point };
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_mode,         MP_ARG_REQUIRED | MP_ARG_INT,   {.u_int = CAN_MODE_NORMAL} },
         { MP_QSTR_extframe,     MP_ARG_BOOL,                    {.u_bool = false} },
@@ -151,6 +183,8 @@ STATIC mp_obj_t pyb_can_init_helper(pyb_can_obj_t *self, size_t n_args, const mp
         { MP_QSTR_bs1,          MP_ARG_KW_ONLY | MP_ARG_INT,    {.u_int = CAN_DEFAULT_BS1} },
         { MP_QSTR_bs2,          MP_ARG_KW_ONLY | MP_ARG_INT,    {.u_int = CAN_DEFAULT_BS2} },
         { MP_QSTR_auto_restart, MP_ARG_KW_ONLY | MP_ARG_BOOL,   {.u_bool = false} },
+        { MP_QSTR_baudrate,     MP_ARG_KW_ONLY | MP_ARG_INT,    {.u_int = 0} },
+        { MP_QSTR_sample_point, MP_ARG_KW_ONLY | MP_ARG_INT,    {.u_int = 75} }, // 75% sampling point
     };
 
     // parse args
@@ -162,10 +196,36 @@ STATIC mp_obj_t pyb_can_init_helper(pyb_can_obj_t *self, size_t n_args, const mp
     // set the CAN configuration values
     memset(&self->can, 0, sizeof(self->can));
 
+    // Calculate CAN bit timing from baudrate if provided
+    if (args[ARG_baudrate].u_int != 0) {
+        uint32_t baudrate = args[ARG_baudrate].u_int;
+        uint32_t sampoint = args[ARG_sample_point].u_int;
+        uint32_t can_kern_clk = pyb_can_get_source_freq();
+        bool timing_found = false;
+
+        // The following max values work on all MCUs for classical CAN.
+        for (int brp = 1; brp < 512 && !timing_found; brp++) {
+            for (int bs1 = 1; bs1 < 16 && !timing_found; bs1++) {
+                for (int bs2 = 1; bs2 < 8 && !timing_found; bs2++) {
+                    if ((baudrate == (can_kern_clk / (brp * (1 + bs1 + bs2)))) &&
+                        ((sampoint * 10) == (((1 + bs1) * 1000) / (1 + bs1 + bs2)))) {
+                        args[ARG_bs1].u_int = bs1;
+                        args[ARG_bs2].u_int = bs2;
+                        args[ARG_prescaler].u_int = brp;
+                        timing_found = true;
+                    }
+                }
+            }
+        }
+        if (!timing_found) {
+            mp_raise_msg(&mp_type_ValueError, MP_ERROR_TEXT("couldn't match baudrate and sample point"));
+        }
+    }
+
     // init CAN (if it fails, it's because the port doesn't exist)
     if (!can_init(self, args[ARG_mode].u_int, args[ARG_prescaler].u_int, args[ARG_sjw].u_int,
         args[ARG_bs1].u_int, args[ARG_bs2].u_int, args[ARG_auto_restart].u_bool)) {
-        mp_raise_msg_varg(&mp_type_ValueError, "CAN(%d) doesn't exist", self->can_id);
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("CAN(%d) doesn't exist"), self->can_id);
     }
 
     return mp_const_none;
@@ -194,13 +254,18 @@ STATIC mp_obj_t pyb_can_make_new(const mp_obj_type_t *type, size_t n_args, size_
             can_idx = PYB_CAN_3;
         #endif
         } else {
-            mp_raise_msg_varg(&mp_type_ValueError, "CAN(%s) doesn't exist", port);
+            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("CAN(%s) doesn't exist"), port);
         }
     } else {
         can_idx = mp_obj_get_int(args[0]);
     }
     if (can_idx < 1 || can_idx > MP_ARRAY_SIZE(MP_STATE_PORT(pyb_can_obj_all))) {
-        mp_raise_msg_varg(&mp_type_ValueError, "CAN(%d) doesn't exist", can_idx);
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("CAN(%d) doesn't exist"), can_idx);
+    }
+
+    // check if the CAN is reserved for system use or not
+    if (MICROPY_HW_CAN_IS_RESERVED(can_idx)) {
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("CAN(%d) is reserved"), can_idx);
     }
 
     pyb_can_obj_t *self;
@@ -381,7 +446,7 @@ STATIC mp_obj_t pyb_can_send(size_t n_args, const mp_obj_t *pos_args, mp_map_t *
     pyb_buf_get_for_send(args[ARG_data].u_obj, &bufinfo, data);
 
     if (bufinfo.len > 8) {
-        mp_raise_ValueError("CAN data field too long");
+        mp_raise_ValueError(MP_ERROR_TEXT("CAN data field too long"));
     }
 
     // send the data
@@ -432,6 +497,20 @@ STATIC mp_obj_t pyb_can_send(size_t n_args, const mp_obj_t *pos_args, mp_map_t *
 
     HAL_StatusTypeDef status;
     #if MICROPY_HW_ENABLE_FDCAN
+    uint32_t timeout_ms = args[ARG_timeout].u_int;
+    uint32_t start = HAL_GetTick();
+    while (HAL_FDCAN_GetTxFifoFreeLevel(&self->can) == 0) {
+        if (timeout_ms == 0) {
+            mp_raise_OSError(MP_ETIMEDOUT);
+        }
+        // Check for the Timeout
+        if (timeout_ms != HAL_MAX_DELAY) {
+            if (HAL_GetTick() - start >= timeout_ms) {
+                mp_raise_OSError(MP_ETIMEDOUT);
+            }
+        }
+        MICROPY_EVENT_POLL_HOOK
+    }
     status = HAL_FDCAN_AddMessageToTxFifoQ(&self->can, &tx_msg, tx_data);
     #else
     self->can.pTxMsg = &tx_msg;
@@ -717,7 +796,7 @@ STATIC mp_obj_t pyb_can_setfilter(size_t n_args, const mp_obj_t *pos_args, mp_ma
         }
         filter.FilterIdHigh = (mp_obj_get_int(params[0]) & 0x1FFFE000) >> 13;
         filter.FilterIdLow = (((mp_obj_get_int(params[0]) & 0x00001FFF) << 3) | 4) | rtr_masks[0];
-        filter.FilterMaskIdHigh = (mp_obj_get_int(params[1]) & 0x1FFFE000 ) >> 13;
+        filter.FilterMaskIdHigh = (mp_obj_get_int(params[1]) & 0x1FFFE000) >> 13;
         filter.FilterMaskIdLow = (((mp_obj_get_int(params[1]) & 0x00001FFF) << 3) | 4) | rtr_masks[1];
         if (args[ARG_mode].u_int == MASK32) {
             filter.FilterMode = CAN_FILTERMODE_IDMASK;
@@ -752,7 +831,7 @@ STATIC mp_obj_t pyb_can_setfilter(size_t n_args, const mp_obj_t *pos_args, mp_ma
 
     return mp_const_none;
 error:
-    mp_raise_ValueError("CAN filter parameter error");
+    mp_raise_ValueError(MP_ERROR_TEXT("CAN filter parameter error"));
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_KW(pyb_can_setfilter_obj, 1, pyb_can_setfilter);
 
@@ -891,8 +970,8 @@ void pyb_can_handle_callback(pyb_can_obj_t *self, uint fifo_id, mp_obj_t callbac
 }
 
 STATIC const mp_stream_p_t can_stream_p = {
-    //.read = can_read, // is read sensible for CAN?
-    //.write = can_write, // is write sensible for CAN?
+    // .read = can_read, // is read sensible for CAN?
+    // .write = can_write, // is write sensible for CAN?
     .ioctl = can_ioctl,
     .is_text = false,
 };

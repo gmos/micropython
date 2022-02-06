@@ -38,14 +38,10 @@
 #include "fsl_lpuart.h"
 
 #include "clock_config.h"
+#include "modmachine.h"
 
-#define LED_STATE_ON (0)
-
-volatile uint32_t systick_ms = 0;
 
 const uint8_t dcd_data[] = { 0x00 };
-
-void board_led_write(bool state);
 
 void board_init(void) {
     // Init clock
@@ -55,19 +51,15 @@ void board_init(void) {
     // Enable IOCON clock
     CLOCK_EnableClock(kCLOCK_Iomuxc);
 
+    // ------------- SDRAM ------------ //
+    #ifdef MICROPY_HW_SDRAM_AVAIL
+    mimxrt_sdram_init();
+    #endif
+
     // 1ms tick timer
     SysTick_Config(SystemCoreClock / 1000);
 
-    // LED
-    IOMUXC_SetPinMux(MICROPY_HW_LED_PINMUX, 0U);
-    IOMUXC_SetPinConfig(MICROPY_HW_LED_PINMUX, 0x10B0U);
-
-    gpio_pin_config_t led_config = { kGPIO_DigitalOutput, 0, kGPIO_NoIntmode };
-    GPIO_PinInit(MICROPY_HW_LED_PORT, MICROPY_HW_LED_PIN, &led_config);
-    board_led_write(true);
-
-    //------------- USB0 -------------//
-
+    // ------------- USB0 ------------- //
     // Clock
     CLOCK_EnableUsbhs0PhyPllClock(kCLOCK_Usbphy480M, 480000000U);
     CLOCK_EnableUsbhs0Clock(kCLOCK_Usb480M, 480000000U);
@@ -93,22 +85,27 @@ void board_init(void) {
     // USB1
     //  CLOCK_EnableUsbhs1PhyPllClock(kCLOCK_Usbphy480M, 480000000U);
     //  CLOCK_EnableUsbhs1Clock(kCLOCK_Usb480M, 480000000U);
-}
 
-void board_led_write(bool state) {
-    GPIO_PinWrite(MICROPY_HW_LED_PORT, MICROPY_HW_LED_PIN, state ? LED_STATE_ON : (1 - LED_STATE_ON));
-}
+    // ADC
+    machine_adc_init();
 
-void SysTick_Handler(void) {
-    systick_ms++;
+    // PIT
+    machine_timer_init_PIT();
+
+    // SDCard
+    #if MICROPY_PY_MACHINE_SDCARD
+    machine_sdcard_init0();
+    #endif
 }
 
 void USB_OTG1_IRQHandler(void) {
-    tud_isr(0);
+    tud_int_handler(0);
     tud_task();
+    __SEV();
 }
 
 void USB_OTG2_IRQHandler(void) {
-    tud_isr(1);
+    tud_int_handler(1);
     tud_task();
+    __SEV();
 }
