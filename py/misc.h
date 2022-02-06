@@ -53,6 +53,10 @@ typedef unsigned int uint;
 // Static assertion macro
 #define MP_STATIC_ASSERT(cond) ((void)sizeof(char[1 - 2 * !(cond)]))
 
+// Round-up integer division
+#define MP_CEIL_DIVIDE(a, b) (((a) + (b) - 1) / (b))
+#define MP_ROUND_DIVIDE(a, b) (((a) + (b) / 2) / (b))
+
 /** memory allocation ******************************************/
 
 // TODO make a lazy m_renew that can increase by a smaller amount than requested (but by at least 1 more element)
@@ -247,7 +251,7 @@ typedef union _mp_float_union_t {
     } p;
     #else
     struct {
-        mp_float_uint_t sgn : 1
+        mp_float_uint_t sgn : 1;
         mp_float_uint_t exp : MP_FLOAT_EXP_BITS;
         mp_float_uint_t frc : MP_FLOAT_FRAC_BITS;
     } p;
@@ -256,5 +260,64 @@ typedef union _mp_float_union_t {
 } mp_float_union_t;
 
 #endif // MICROPY_PY_BUILTINS_FLOAT
+
+/** ROM string compression *************/
+
+#if MICROPY_ROM_TEXT_COMPRESSION
+
+#if MICROPY_ERROR_REPORTING == MICROPY_ERROR_REPORTING_NONE
+#error "MICROPY_ERROR_REPORTING_NONE requires MICROPY_ROM_TEXT_COMPRESSION disabled"
+#endif
+
+#ifdef NO_QSTR
+
+// Compression enabled but doing QSTR extraction.
+// So leave MP_COMPRESSED_ROM_TEXT in place for makeqstrdefs.py / makecompresseddata.py to find them.
+
+#else
+
+// Compression enabled and doing a regular build.
+// Map MP_COMPRESSED_ROM_TEXT to the compressed strings.
+
+// Force usage of the MP_ERROR_TEXT macro by requiring an opaque type.
+typedef struct {
+    #ifdef __clang__
+    // Fix "error: empty struct has size 0 in C, size 1 in C++".
+    char dummy;
+    #endif
+} *mp_rom_error_text_t;
+
+#include <string.h>
+
+inline __attribute__((always_inline)) const char *MP_COMPRESSED_ROM_TEXT(const char *msg) {
+    // "genhdr/compressed.data.h" contains an invocation of the MP_MATCH_COMPRESSED macro for each compressed string.
+    // The giant if(strcmp) tree is optimized by the compiler, which turns this into a direct return of the compressed data.
+    #define MP_MATCH_COMPRESSED(a, b) if (strcmp(msg, a) == 0) { return b; } else
+
+    // It also contains a single invocation of the MP_COMPRESSED_DATA macro, we don't need that here.
+    #define MP_COMPRESSED_DATA(x)
+
+    #include "genhdr/compressed.data.h"
+
+#undef MP_COMPRESSED_DATA
+#undef MP_MATCH_COMPRESSED
+
+    return msg;
+}
+
+#endif
+
+#else
+
+// Compression not enabled, just make it a no-op.
+
+typedef const char *mp_rom_error_text_t;
+#define MP_COMPRESSED_ROM_TEXT(x) x
+
+#endif // MICROPY_ROM_TEXT_COMPRESSION
+
+// Might add more types of compressed text in the future.
+// For now, forward directly to MP_COMPRESSED_ROM_TEXT.
+#define MP_ERROR_TEXT(x) (mp_rom_error_text_t)MP_COMPRESSED_ROM_TEXT(x)
 
 #endif // MICROPY_INCLUDED_PY_MISC_H

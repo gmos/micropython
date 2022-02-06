@@ -101,7 +101,7 @@ STATIC uint32_t TIMx_Config(mp_obj_t timer) {
     } else if (tim->Instance == TIM4) {
         return DAC_TRIGGER_T4_TRGO;
     #endif
-    #if defined(TIM5)
+    #if defined(TIM5) && defined(DAC_TRIGGER_T5_TRGO) // G474 doesn't have this
     } else if (tim->Instance == TIM5) {
         return DAC_TRIGGER_T5_TRGO;
     #endif
@@ -118,16 +118,23 @@ STATIC uint32_t TIMx_Config(mp_obj_t timer) {
         return DAC_TRIGGER_T8_TRGO;
     #endif
     } else {
-        mp_raise_ValueError("Timer does not support DAC triggering");
+        mp_raise_ValueError(MP_ERROR_TEXT("Timer does not support DAC triggering"));
     }
 }
 
 STATIC void dac_deinit(uint32_t dac_channel) {
     DAC->CR &= ~(DAC_CR_EN1 << dac_channel);
-    #if defined(STM32H7) || defined(STM32L4)
+    #if defined(STM32G4) || defined(STM32H7) || defined(STM32L4)
     DAC->MCR = (DAC->MCR & ~(DAC_MCR_MODE1_Msk << dac_channel)) | (DAC_OUTPUTBUFFER_DISABLE << dac_channel);
     #else
     DAC->CR |= DAC_CR_BOFF1 << dac_channel;
+    #endif
+}
+
+void dac_deinit_all(void) {
+    dac_deinit(DAC_CHANNEL_1);
+    #if !defined(STM32L452xx)
+    dac_deinit(DAC_CHANNEL_2);
     #endif
 }
 
@@ -135,7 +142,7 @@ STATIC void dac_config_channel(uint32_t dac_channel, uint32_t trig, uint32_t out
     DAC->CR &= ~(DAC_CR_EN1 << dac_channel);
     uint32_t cr_off = DAC_CR_DMAEN1 | DAC_CR_MAMP1 | DAC_CR_WAVE1 | DAC_CR_TSEL1 | DAC_CR_TEN1;
     uint32_t cr_on = trig;
-    #if defined(STM32H7) || defined(STM32L4)
+    #if defined(STM32G4) || defined(STM32H7) || defined(STM32L4)
     DAC->MCR = (DAC->MCR & ~(DAC_MCR_MODE1_Msk << dac_channel)) | (outbuf << dac_channel);
     #else
     cr_off |= DAC_CR_BOFF1;
@@ -252,7 +259,7 @@ STATIC mp_obj_t pyb_dac_init_helper(pyb_dac_obj_t *self, size_t n_args, const mp
     __DAC_CLK_ENABLE();
     #elif defined(STM32H7)
     __HAL_RCC_DAC12_CLK_ENABLE();
-    #elif defined(STM32F0) || defined(STM32L4)
+    #elif defined(STM32F0) || defined(STM32G4) || defined(STM32L4)
     __HAL_RCC_DAC1_CLK_ENABLE();
     #else
     #error Unsupported Processor
@@ -265,7 +272,7 @@ STATIC mp_obj_t pyb_dac_init_helper(pyb_dac_obj_t *self, size_t n_args, const mp
     if (args[0].u_int == 8 || args[0].u_int == 12) {
         self->bits = args[0].u_int;
     } else {
-        mp_raise_ValueError("unsupported bits");
+        mp_raise_ValueError(MP_ERROR_TEXT("unsupported bits"));
     }
 
     // set output buffer config
@@ -307,7 +314,7 @@ STATIC mp_obj_t pyb_dac_make_new(const mp_obj_type_t *type, size_t n_args, size_
         } else if (pin == pin_A5) {
             dac_id = 2;
         } else {
-            mp_raise_msg_varg(&mp_type_ValueError, "Pin(%q) doesn't have DAC capabilities", pin->name);
+            mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("Pin(%q) doesn't have DAC capabilities"), pin->name);
         }
     }
 
@@ -319,7 +326,7 @@ STATIC mp_obj_t pyb_dac_make_new(const mp_obj_type_t *type, size_t n_args, size_
         dac_channel = DAC_CHANNEL_2;
     #endif
     } else {
-        mp_raise_msg_varg(&mp_type_ValueError, "DAC(%d) doesn't exist", dac_id);
+        mp_raise_msg_varg(&mp_type_ValueError, MP_ERROR_TEXT("DAC(%d) doesn't exist"), dac_id);
     }
 
     pyb_dac_obj_t *dac = &pyb_dac_obj[dac_id - 1];

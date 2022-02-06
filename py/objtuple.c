@@ -39,15 +39,19 @@
 
 void mp_obj_tuple_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
     mp_obj_tuple_t *o = MP_OBJ_TO_PTR(o_in);
+    const char *item_separator = ", ";
     if (MICROPY_PY_UJSON && kind == PRINT_JSON) {
         mp_print_str(print, "[");
+        #if MICROPY_PY_UJSON_SEPARATORS
+        item_separator = MP_PRINT_GET_EXT(print)->item_separator;
+        #endif
     } else {
         mp_print_str(print, "(");
         kind = PRINT_REPR;
     }
     for (size_t i = 0; i < o->len; i++) {
         if (i > 0) {
-            mp_print_str(print, ", ");
+            mp_print_str(print, item_separator);
         }
         mp_obj_print_helper(print, o->items[i], kind);
     }
@@ -185,7 +189,7 @@ mp_obj_t mp_obj_tuple_subscr(mp_obj_t self_in, mp_obj_t index, mp_obj_t value) {
         if (mp_obj_is_type(index, &mp_type_slice)) {
             mp_bound_slice_t slice;
             if (!mp_seq_get_fast_slice_indexes(self->len, index, &slice)) {
-                mp_raise_NotImplementedError("only slices with step=1 (aka None) are supported");
+                mp_raise_NotImplementedError(MP_ERROR_TEXT("only slices with step=1 (aka None) are supported"));
             }
             mp_obj_tuple_t *res = MP_OBJ_TO_PTR(mp_obj_new_tuple(slice.stop - slice.start, NULL));
             mp_seq_copy(res->items, self->items + slice.start, res->len, mp_obj_t);

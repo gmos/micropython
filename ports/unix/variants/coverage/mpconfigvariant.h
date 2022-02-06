@@ -30,6 +30,7 @@
 #define MICROPY_VFS                    (1)
 #define MICROPY_PY_UOS_VFS             (1)
 
+#define MICROPY_DEBUG_PARSE_RULE_NAME  (1)
 #define MICROPY_OPT_MATH_FACTORIAL     (1)
 #define MICROPY_FLOAT_HIGH_QUALITY_HASH (1)
 #define MICROPY_ENABLE_SCHEDULER       (1)
@@ -39,6 +40,7 @@
 #define MICROPY_WARNINGS_CATEGORY      (1)
 #define MICROPY_MODULE_GETATTR         (1)
 #define MICROPY_PY_DELATTR_SETATTR     (1)
+#define MICROPY_PY_ALL_INPLACE_SPECIAL_METHODS (1)
 #define MICROPY_PY_REVERSE_SPECIAL_METHODS (1)
 #define MICROPY_PY_BUILTINS_MEMORYVIEW_ITEMSIZE (1)
 #define MICROPY_PY_BUILTINS_NEXT2      (1)
@@ -46,10 +48,11 @@
 #define MICROPY_PY_BUILTINS_HELP       (1)
 #define MICROPY_PY_BUILTINS_HELP_MODULES (1)
 #define MICROPY_PY_SYS_GETSIZEOF       (1)
+#define MICROPY_PY_MATH_CONSTANTS      (1)
 #define MICROPY_PY_MATH_FACTORIAL      (1)
 #define MICROPY_PY_URANDOM_EXTRA_FUNCS (1)
 #define MICROPY_PY_IO_BUFFEREDWRITER (1)
-#define MICROPY_PY_IO_RESOURCE_STREAM (1)
+#define MICROPY_PY_UASYNCIO            (1)
 #define MICROPY_PY_URE_DEBUG           (1)
 #define MICROPY_PY_URE_MATCH_GROUPS    (1)
 #define MICROPY_PY_URE_MATCH_SPAN_START_END (1)
@@ -60,10 +63,6 @@
 #define MICROPY_PY_UCRYPTOLIB          (1)
 #define MICROPY_PY_UCRYPTOLIB_CTR      (1)
 #define MICROPY_PY_MICROPYTHON_HEAP_LOCKED (1)
-
-// TODO these should be generic, not bound to fatfs
-#define mp_type_fileio mp_type_vfs_posix_fileio
-#define mp_type_textio mp_type_vfs_posix_textio
 
 // use vfs's functions for import stat and builtin open
 #define mp_import_stat mp_vfs_import_stat

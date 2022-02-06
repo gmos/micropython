@@ -23,6 +23,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+#include <errno.h>
 #include <unistd.h>
 
 #ifndef CHAR_CTRL_C
@@ -51,7 +52,7 @@ static inline int mp_hal_readline(vstr_t *vstr, const char *p) {
 #elif MICROPY_PY_BUILTINS_INPUT && MICROPY_USE_READLINE == 1
 
 #include "py/misc.h"
-#include "lib/mp-readline/readline.h"
+#include "shared/readline/readline.h"
 // For built-in input() we need to wrap the standard readline() to enable raw mode
 #define mp_hal_readline mp_hal_readline
 static inline int mp_hal_readline(vstr_t *vstr, const char *p) {
@@ -63,16 +64,37 @@ static inline int mp_hal_readline(vstr_t *vstr, const char *p) {
 
 #endif
 
-// TODO: POSIX et al. define usleep() as guaranteedly capable only of 1s sleep:
-// "The useconds argument shall be less than one million."
-static inline void mp_hal_delay_ms(mp_uint_t ms) {
-    usleep((ms) * 1000);
-}
 static inline void mp_hal_delay_us(mp_uint_t us) {
     usleep(us);
 }
 #define mp_hal_ticks_cpu() 0
 
+// This macro is used to implement PEP 475 to retry specified syscalls on EINTR
+#define MP_HAL_RETRY_SYSCALL(ret, syscall, raise) { \
+        for (;;) { \
+            MP_THREAD_GIL_EXIT(); \
+            ret = syscall; \
+            MP_THREAD_GIL_ENTER(); \
+            if (ret == -1) { \
+                int err = errno; \
+                if (err == EINTR) { \
+                    mp_handle_pending(true); \
+                    continue; \
+                } \
+                raise; \
+            } \
+            break; \
+        } \
+}
+
 #define RAISE_ERRNO(err_flag, error_val) \
     { if (err_flag == -1) \
       { mp_raise_OSError(error_val); } }
+
+#if MICROPY_PY_BLUETOOTH
+enum {
+    MP_HAL_MAC_BDADDR,
+};
+
+void mp_hal_get_mac(int idx, uint8_t buf[6]);
+#endif

@@ -54,11 +54,11 @@ STATIC void sighandler(int signum) {
         sigprocmask(SIG_SETMASK, &mask, NULL);
         nlr_raise(MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception)));
         #else
-        if (MP_STATE_VM(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
+        if (MP_STATE_MAIN_THREAD(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
             // this is the second time we are called, so die straight away
             exit(1);
         }
-        mp_keyboard_interrupt();
+        mp_sched_keyboard_interrupt();
         #endif
     }
 }
@@ -165,10 +165,9 @@ int mp_hal_stdin_rx_chr(void) {
 main_term:;
     #endif
 
-    MP_THREAD_GIL_EXIT();
     unsigned char c;
-    int ret = read(0, &c, 1);
-    MP_THREAD_GIL_ENTER();
+    ssize_t ret;
+    MP_HAL_RETRY_SYSCALL(ret, read(STDIN_FILENO, &c, 1), {});
     if (ret == 0) {
         c = 4; // EOF, ctrl-D
     } else if (c == '\n') {
@@ -178,11 +177,9 @@ main_term:;
 }
 
 void mp_hal_stdout_tx_strn(const char *str, size_t len) {
-    MP_THREAD_GIL_EXIT();
-    int ret = write(1, str, len);
-    MP_THREAD_GIL_ENTER();
+    ssize_t ret;
+    MP_HAL_RETRY_SYSCALL(ret, write(STDOUT_FILENO, str, len), {});
     mp_uos_dupterm_tx_strn(str, len);
-    (void)ret; // to suppress compiler warning
 }
 
 // cooked is same as uncooked because the terminal does some postprocessing
@@ -215,5 +212,25 @@ mp_uint_t mp_hal_ticks_us(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000000 + tv.tv_usec;
+    #endif
+}
+
+uint64_t mp_hal_time_ns(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+}
+
+void mp_hal_delay_ms(mp_uint_t ms) {
+    #ifdef MICROPY_EVENT_POLL_HOOK
+    mp_uint_t start = mp_hal_ticks_ms();
+    while (mp_hal_ticks_ms() - start < ms) {
+        // MICROPY_EVENT_POLL_HOOK does mp_hal_delay_us(500) (i.e. usleep(500)).
+        MICROPY_EVENT_POLL_HOOK
+    }
+    #else
+    // TODO: POSIX et al. define usleep() as guaranteedly capable only of 1s sleep:
+    // "The useconds argument shall be less than one million."
+    usleep(ms * 1000);
     #endif
 }

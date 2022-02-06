@@ -24,6 +24,7 @@
  * THE SOFTWARE.
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,7 @@
 #include "input.h"
 
 #if MICROPY_USE_READLINE == 1
-#include "lib/mp-readline/readline.h"
+#include "shared/readline/readline.h"
 #endif
 
 #if MICROPY_USE_READLINE == 0
@@ -74,6 +75,9 @@ void prompt_read_history(void) {
                 char c;
                 int sz = read(fd, &c, 1);
                 if (sz < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
                     break;
                 }
                 if (sz == 0 || c == '\n') {
@@ -107,10 +111,10 @@ void prompt_write_history(void) {
             for (int i = MP_ARRAY_SIZE(MP_STATE_PORT(readline_hist)) - 1; i >= 0; i--) {
                 const char *line = MP_STATE_PORT(readline_hist)[i];
                 if (line != NULL) {
-                    int res;
-                    res = write(fd, line, strlen(line));
-                    res = write(fd, "\n", 1);
-                    (void)res;
+                    while (write(fd, line, strlen(line)) == -1 && errno == EINTR) {
+                    }
+                    while (write(fd, "\n", 1) == -1 && errno == EINTR) {
+                    }
                 }
             }
             close(fd);

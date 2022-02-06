@@ -44,13 +44,18 @@ STATIC mp_obj_t list_pop(size_t n_args, const mp_obj_t *args);
 
 STATIC void list_print(const mp_print_t *print, mp_obj_t o_in, mp_print_kind_t kind) {
     mp_obj_list_t *o = MP_OBJ_TO_PTR(o_in);
+    const char *item_separator = ", ";
     if (!(MICROPY_PY_UJSON && kind == PRINT_JSON)) {
         kind = PRINT_REPR;
+    } else {
+        #if MICROPY_PY_UJSON_SEPARATORS
+        item_separator = MP_PRINT_GET_EXT(print)->item_separator;
+        #endif
     }
     mp_print_str(print, "[");
     for (size_t i = 0; i < o->len; i++) {
         if (i > 0) {
-            mp_print_str(print, ", ");
+            mp_print_str(print, item_separator);
         }
         mp_obj_print_helper(print, o->items[i], kind);
     }
@@ -270,7 +275,7 @@ STATIC mp_obj_t list_pop(size_t n_args, const mp_obj_t *args) {
     mp_check_self(mp_obj_is_type(args[0], &mp_type_list));
     mp_obj_list_t *self = MP_OBJ_TO_PTR(args[0]);
     if (self->len == 0) {
-        mp_raise_msg(&mp_type_IndexError, "pop from empty list");
+        mp_raise_msg(&mp_type_IndexError, MP_ERROR_TEXT("pop from empty list"));
     }
     size_t index = mp_get_index(self->base.type, self->len, n_args == 1 ? MP_OBJ_NEW_SMALL_INT(-1) : args[1], false);
     mp_obj_t ret = self->items[index];

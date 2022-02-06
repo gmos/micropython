@@ -49,14 +49,12 @@ void mp_hal_stdout_tx_strn(const char *str, mp_uint_t len) {
     while (len--) {
         char c = *str++;
         while (console_putchar(c) == -1) {
-            k_sleep(1);
+            k_msleep(1);
         }
     }
     #else
-    static struct device *uart_console_dev;
-    if (uart_console_dev == NULL) {
-        uart_console_dev = device_get_binding(CONFIG_UART_CONSOLE_ON_DEV_NAME);
-    }
+    static const struct device *uart_console_dev =
+        DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
     while (len--) {
         uart_poll_out(uart_console_dev, *str++);
