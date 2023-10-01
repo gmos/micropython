@@ -40,10 +40,10 @@
 #define DEFAULT_VREF 1100
 
 madcblock_obj_t madcblock_obj[] = {
-    #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32C3
+    #if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32S3
     {{&machine_adcblock_type}, ADC_UNIT_1, 12, -1, {0}},
     {{&machine_adcblock_type}, ADC_UNIT_2, 12, -1, {0}},
-    #elif CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3
+    #elif CONFIG_IDF_TARGET_ESP32S2
     {{&machine_adcblock_type}, ADC_UNIT_1, 13, -1, {0}},
     {{&machine_adcblock_type}, ADC_UNIT_2, 13, -1, {0}},
     #endif
@@ -194,10 +194,11 @@ STATIC const mp_rom_map_elem_t madcblock_locals_dict_table[] = {
 };
 STATIC MP_DEFINE_CONST_DICT(madcblock_locals_dict, madcblock_locals_dict_table);
 
-const mp_obj_type_t machine_adcblock_type = {
-    { &mp_type_type },
-    .name = MP_QSTR_ADCBlock,
-    .print = madcblock_print,
-    .make_new = madcblock_make_new,
-    .locals_dict = (mp_obj_t)&madcblock_locals_dict,
-};
+MP_DEFINE_CONST_OBJ_TYPE(
+    machine_adcblock_type,
+    MP_QSTR_ADCBlock,
+    MP_TYPE_FLAG_NONE,
+    make_new, madcblock_make_new,
+    print, madcblock_print,
+    locals_dict, &madcblock_locals_dict
+    );
