@@ -4,10 +4,12 @@
  * Copyright (c) 2023 Arduino SA
  */
 
-#define MICROPY_HW_BOARD_NAME       "GIGA"
+#define MICROPY_HW_BOARD_NAME       "Arduino GIGA R1 WiFi"
 #define MICROPY_HW_MCU_NAME         "STM32H747"
-#define MICROPY_PY_SYS_PLATFORM     "Giga"
-#define MICROPY_HW_FLASH_FS_LABEL   "Giga"
+#define MICROPY_HW_FLASH_FS_LABEL   "GIGA R1 WiFi"
+
+// Network config
+#define MICROPY_PY_NETWORK_HOSTNAME_DEFAULT "mpy-giga-r1-wifi"
 
 #define MICROPY_OBJ_REPR            (MICROPY_OBJ_REPR_C)
 #define UINT_FMT                    "%u"
@@ -104,6 +106,12 @@ void GIGA_board_low_power(int mode);
 // SMPS configuration
 #define MICROPY_HW_PWR_SMPS_CONFIG      (PWR_LDO_SUPPLY)
 
+// Configure the analog switches for dual-pad pins.
+#define MICROPY_HW_ANALOG_SWITCH_PA0    (SYSCFG_SWITCH_PA0_OPEN)
+#define MICROPY_HW_ANALOG_SWITCH_PA1    (SYSCFG_SWITCH_PA1_OPEN)
+#define MICROPY_HW_ANALOG_SWITCH_PC2    (SYSCFG_SWITCH_PC2_OPEN)
+#define MICROPY_HW_ANALOG_SWITCH_PC3    (SYSCFG_SWITCH_PC3_OPEN)
+
 // There is an external 32kHz oscillator
 #define RTC_ASYNCH_PREDIV           (0)
 #define RTC_SYNCH_PREDIV            (0x7fff)
@@ -184,9 +192,9 @@ extern struct _spi_bdev_t spi_bdev;
 #define MICROPY_HW_USRSW_PRESSED    (1)
 
 // LEDs
-#define MICROPY_HW_LED1             (pyb_pin_LEDR) // red
-#define MICROPY_HW_LED2             (pyb_pin_LEDG) // green
-#define MICROPY_HW_LED3             (pyb_pin_LEDB) // yellow
+#define MICROPY_HW_LED1             (pyb_pin_LED_RED) // red
+#define MICROPY_HW_LED2             (pyb_pin_LED_GREEN) // green
+#define MICROPY_HW_LED3             (pyb_pin_LED_BLUE) // yellow
 #define MICROPY_HW_LED_ON(pin)      (mp_hal_pin_low(pin))
 #define MICROPY_HW_LED_OFF(pin)     (mp_hal_pin_high(pin))
 
@@ -218,6 +226,7 @@ extern struct _spi_bdev_t spi_bdev;
 #define MICROPY_HW_SDRAM_SIZE               (64 / 8 * 1024 * 1024)  // 64 Mbit
 #define MICROPY_HW_SDRAM_STARTUP_TEST       (1)
 #define MICROPY_HW_SDRAM_TEST_FAIL_ON_ERROR (true)
+#define MICROPY_HW_FMC_SWAP_BANKS           (1)
 
 // Timing configuration for 200MHz/2=100MHz (10ns)
 #define MICROPY_HW_SDRAM_CLOCK_PERIOD       2
