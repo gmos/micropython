@@ -30,9 +30,31 @@
 #include "py/gc.h"
 #include "py/mperrno.h"
 #include "py/stackctrl.h"
-#include "lib/utils/gchelper.h"
-#include "lib/utils/pyexec.h"
-#include "tusb.h"
+#include "shared/readline/readline.h"
+#include "shared/runtime/gchelper.h"
+#include "shared/runtime/pyexec.h"
+#include "shared/runtime/softtimer.h"
+#include "shared/tinyusb/mp_usbd.h"
+#include "ticks.h"
+#include "led.h"
+#include "pendsv.h"
+#include "modmachine.h"
+
+#if MICROPY_PY_LWIP
+#include "lwip/init.h"
+#include "lwip/apps/mdns.h"
+#if MICROPY_PY_NETWORK_CYW43
+#include "lib/cyw43-driver/src/cyw43.h"
+#endif
+#endif
+
+#if MICROPY_PY_BLUETOOTH
+#include "mpbthciport.h"
+#include "extmod/modbluetooth.h"
+#endif
+
+#include "systick.h"
+#include "extmod/modnetwork.h"
 
 extern uint8_t _sstack, _estack, _gc_heap_start, _gc_heap_end;
 
@@ -40,18 +62,74 @@ void board_init(void);
 
 int main(void) {
     board_init();
-    tusb_init();
+    ticks_init();
+    pendsv_init();
 
-    mp_stack_set_top(&_estack);
-    mp_stack_set_limit(&_estack - &_sstack - 1024);
+    #if MICROPY_PY_LWIP
+    // lwIP doesn't allow to reinitialise itself by subsequent calls to this function
+    // because the system timeout list (next_timeout) is only ever reset by BSS clearing.
+    // So for now we only init the lwIP stack once on power-up.
+    lwip_init();
+    #if LWIP_MDNS_RESPONDER
+    mdns_resp_init();
+    #endif
+
+    systick_enable_dispatch(SYSTICK_DISPATCH_LWIP, mod_network_lwip_poll_wrapper);
+    #endif
+    #if MICROPY_PY_BLUETOOTH
+    mp_bluetooth_hci_init();
+    #endif
+
+    #if MICROPY_PY_NETWORK_CYW43
+    {
+        cyw43_init(&cyw43_state);
+        uint8_t buf[8];
+        memcpy(&buf[0], "PYBD", 4);
+        mp_hal_get_mac_ascii(MP_HAL_MAC_WLAN0, 8, 4, (char *)&buf[4]);
+        cyw43_wifi_ap_set_ssid(&cyw43_state, 8, buf);
+        cyw43_wifi_ap_set_auth(&cyw43_state, CYW43_AUTH_WPA2_MIXED_PSK);
+        cyw43_wifi_ap_set_password(&cyw43_state, 8, (const uint8_t *)"pybd0123");
+    }
+    #endif
 
     for (;;) {
+        #if defined(MICROPY_HW_LED1_PIN)
+        led_init();
+        #endif
+
+        mp_stack_set_top(&_estack);
+        mp_stack_set_limit(&_estack - &_sstack - 1024);
+
         gc_init(&_gc_heap_start, &_gc_heap_end);
         mp_init();
 
-        mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_path), 0);
-        mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR_));
-        mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_argv), 0);
+        #if MICROPY_PY_NETWORK
+        mod_network_init();
+        #endif
+
+        // Initialise sub-systems.
+        readline_init0();
+
+        // Execute _boot.py to set up the filesystem.
+        pyexec_frozen_module("_boot.py", false);
+
+        // Execute user scripts.
+        int ret = pyexec_file_if_exists("boot.py");
+
+        #if MICROPY_HW_ENABLE_USBDEV
+        mp_usbd_init();
+        #endif
+
+        if (ret & PYEXEC_FORCED_EXIT) {
+            goto soft_reset_exit;
+        }
+        // Do not execute main.py if boot.py failed
+        if (pyexec_mode_kind == PYEXEC_MODE_FRIENDLY_REPL && ret != 0) {
+            ret = pyexec_file_if_exists("main.py");
+            if (ret & PYEXEC_FORCED_EXIT) {
+                goto soft_reset_exit;
+            }
+        }
 
         for (;;) {
             if (pyexec_mode_kind == PYEXEC_MODE_RAW_REPL) {
@@ -65,7 +143,22 @@ int main(void) {
             }
         }
 
+    soft_reset_exit:
         mp_printf(MP_PYTHON_PRINTER, "MPY: soft reboot\n");
+        machine_pin_irq_deinit();
+        machine_rtc_irq_deinit();
+        #if MICROPY_PY_MACHINE_I2S
+        machine_i2s_deinit_all();
+        #endif
+        #if MICROPY_PY_BLUETOOTH
+        mp_bluetooth_deinit();
+        #endif
+        #if MICROPY_PY_NETWORK
+        mod_network_deinit();
+        #endif
+        machine_uart_deinit_all();
+        machine_pwm_deinit_all();
+        soft_timer_deinit();
         gc_sweep_all();
         mp_deinit();
     }
@@ -75,24 +168,9 @@ int main(void) {
 
 void gc_collect(void) {
     gc_collect_start();
-    uintptr_t regs[10];
-    uintptr_t sp = gc_helper_get_regs_and_sp(regs);
-    gc_collect_root((void **)sp, ((uintptr_t)MP_STATE_THREAD(stack_top) - sp) / sizeof(uint32_t));
+    gc_helper_collect_regs_and_stack();
     gc_collect_end();
 }
-
-mp_lexer_t *mp_lexer_new_from_file(const char *filename) {
-    mp_raise_OSError(MP_ENOENT);
-}
-
-mp_import_stat_t mp_import_stat(const char *path) {
-    return MP_IMPORT_STAT_NO_EXIST;
-}
-
-mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
-    return mp_const_none;
-}
-MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 void nlr_jump_fail(void *val) {
     for (;;) {

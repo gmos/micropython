@@ -40,6 +40,8 @@ _heap_end = _sstack;
 
 ENTRY(Reset_Handler)
 
+REGION_ALIAS("FLASH_COMMON", FLASH_APP);
+
 SECTIONS
 {
     /* Define the code that goes in QSPI flash */
@@ -50,61 +52,8 @@ SECTIONS
         . = ALIGN(4);
     } >FLASH_QSPI
 
-    /* The startup code goes first into main flash */
-    .isr_vector :
-    {
-        . = ALIGN(4);
-        KEEP(*(.isr_vector))
-        . = ALIGN(4);
-    } >FLASH_APP
-
-    /* The program code and other data goes into flash */
-    .text :
-    {
-        . = ALIGN(4);
-        *(.text*)
-        *(.rodata*)
-        . = ALIGN(4);
-        _etext = .;
-    } >FLASH_APP
-
-    /* Used by the startup to initialize data */
-    _sidata = LOADADDR(.data);
-
-    /* The initialized data section */
-    .data :
-    {
-        . = ALIGN(4);
-        _sdata = .;
-        *(.data*)
-        . = ALIGN(4);
-        _edata = .;
-    } >RAM AT> FLASH_APP
-
-    /* The uninitialized (zeroed) data section */
-    .bss :
-    {
-        . = ALIGN(4);
-        _sbss = .;
-        *(.bss*)
-        *(COMMON)
-        . = ALIGN(4);
-        _ebss = .;
-    } >RAM
-
-    /* Define the start of the heap, and make sure we have a minimum size */
-    .heap :
-    {
-        . = ALIGN(4);
-        . = . + _minimum_heap_size;
-        . = ALIGN(4);
-    } >RAM
-
-    /* Just checks there is enough RAM for the stack */
-    .stack :
-    {
-        . = ALIGN(4);
-        . = . + _minimum_stack_size;
-        . = ALIGN(4);
-    } >RAM
+    INCLUDE common_isr.ld
+    INCLUDE common_text.ld
+    INCLUDE common_extratext_data_in_flash.ld
+    INCLUDE common_bss_heap_stack.ld
 }

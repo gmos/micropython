@@ -3,7 +3,7 @@
  *
  * FileName: uart.c
  *
- * Description: Two UART mode configration and interrupt handler.
+ * Description: Two UART mode configuration and interrupt handler.
  *              Check your hardware connection while use this mode.
  *
  * Modification history:
@@ -17,7 +17,8 @@
 #include "etshal.h"
 #include "c_types.h"
 #include "user_interface.h"
-#include "esp_mphal.h"
+#include "py/mphal.h"
+#include "py/runtime.h"
 
 // seems that this is missing in the Espressif SDK
 #define FUNC_U0RXD 0
@@ -42,7 +43,7 @@ static ringbuf_t uart_ringbuf = {uart_ringbuf_array, sizeof(uart_ringbuf_array),
 static void uart0_rx_intr_handler(void *para);
 
 void soft_reset(void);
-void mp_keyboard_interrupt(void);
+void mp_sched_keyboard_interrupt(void);
 
 /******************************************************************************
  * FunctionName : uart_config
@@ -111,6 +112,15 @@ void uart_tx_one_char(uint8 uart, uint8 TxChar) {
     WRITE_PERI_REG(UART_FIFO(uart), TxChar);
 }
 
+int uart_txdone(uint8 uart) {
+    uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S);
+    if ((fifo_cnt >> UART_TXFIFO_CNT_S & UART_TXFIFO_CNT) == 0) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 void uart_flush(uint8 uart) {
     while (true) {
         uint32 fifo_cnt = READ_PERI_REG(UART_STATUS(uart)) & (UART_TXFIFO_CNT << UART_TXFIFO_CNT_S);
@@ -155,7 +165,7 @@ uart_os_config(int uart) {
 *******************************************************************************/
 
 static void uart0_rx_intr_handler(void *para) {
-    /* uart0 and uart1 intr combine togther, when interrupt occur, see reg 0x3ff20020, bit2, bit0 represents
+    /* uart0 and uart1 intr combine together, when interrupt occur, see reg 0x3ff20020, bit2, bit0 represents
       * uart1 and uart0 respectively
       */
 
@@ -179,7 +189,7 @@ static void uart0_rx_intr_handler(void *para) {
             // directly on stdin_ringbuf, rather than going via uart_ringbuf
             if (uart_attached_to_dupterm) {
                 if (RcvChar == mp_interrupt_char) {
-                    mp_keyboard_interrupt();
+                    mp_sched_keyboard_interrupt();
                 } else {
                     ringbuf_put(&stdin_ringbuf, RcvChar);
                 }
@@ -200,7 +210,7 @@ static void uart0_rx_intr_handler(void *para) {
 
 // Waits at most timeout microseconds for at least 1 char to become ready for reading.
 // Returns true if something available, false if not.
-bool uart_rx_wait(uint32_t timeout_us) {
+bool ICACHE_FLASH_ATTR uart_rx_wait(uint32_t timeout_us) {
     uint32_t start = system_get_time();
     for (;;) {
         if (uart_ringbuf.iget != uart_ringbuf.iput) {
@@ -209,7 +219,7 @@ bool uart_rx_wait(uint32_t timeout_us) {
         if (system_get_time() - start >= timeout_us) {
             return false; // timeout
         }
-        ets_event_poll();
+        mp_event_handle_nowait();
     }
 }
 
@@ -285,10 +295,10 @@ void ICACHE_FLASH_ATTR uart0_set_rxbuf(uint8 *buf, int len) {
 // Task-based UART interface
 
 #include "py/obj.h"
-#include "lib/utils/pyexec.h"
+#include "shared/runtime/pyexec.h"
 
 #if MICROPY_REPL_EVENT_DRIVEN
-void uart_task_handler(os_event_t *evt) {
+void ICACHE_FLASH_ATTR uart_task_handler(os_event_t *evt) {
     if (pyexec_repl_active) {
         // TODO: Just returning here isn't exactly right.
         // What really should be done is something like
@@ -303,7 +313,7 @@ void uart_task_handler(os_event_t *evt) {
     int c, ret = 0;
     while ((c = ringbuf_get(&stdin_ringbuf)) >= 0) {
         if (c == mp_interrupt_char) {
-            mp_keyboard_interrupt();
+            mp_sched_keyboard_interrupt();
         }
         ret = pyexec_event_repl_process_char(c);
         if (ret & PYEXEC_FORCED_EXIT) {

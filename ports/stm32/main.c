@@ -3,7 +3,7 @@
  *
  * The MIT License (MIT)
  *
- * Copyright (c) 2013-2018 Damien P. George
+ * Copyright (c) 2013-2020 Damien P. George
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,13 +32,16 @@
 #include "py/gc.h"
 #include "py/mperrno.h"
 #include "py/mphal.h"
-#include "lib/mp-readline/readline.h"
-#include "lib/utils/pyexec.h"
+#include "shared/readline/readline.h"
+#include "shared/runtime/pyexec.h"
+#include "shared/runtime/softtimer.h"
 #include "lib/oofatfs/ff.h"
 #include "lib/littlefs/lfs1.h"
 #include "lib/littlefs/lfs1_util.h"
 #include "lib/littlefs/lfs2.h"
 #include "lib/littlefs/lfs2_util.h"
+#include "extmod/modmachine.h"
+#include "extmod/modnetwork.h"
 #include "extmod/vfs.h"
 #include "extmod/vfs_fat.h"
 #include "extmod/vfs_lfs.h"
@@ -46,13 +49,17 @@
 #if MICROPY_PY_LWIP
 #include "lwip/init.h"
 #include "lwip/apps/mdns.h"
-#include "drivers/cyw43/cyw43.h"
+#if MICROPY_PY_NETWORK_CYW43
+#include "lib/cyw43-driver/src/cyw43.h"
+#endif
 #endif
 
 #if MICROPY_PY_BLUETOOTH
 #include "extmod/modbluetooth.h"
 #endif
 
+#include "boardctrl.h"
+#include "mpbthciport.h"
 #include "mpu.h"
 #include "rfcore.h"
 #include "systick.h"
@@ -62,7 +69,6 @@
 #include "gccollect.h"
 #include "factoryreset.h"
 #include "modmachine.h"
-#include "softtimer.h"
 #include "i2c.h"
 #include "spi.h"
 #include "uart.h"
@@ -81,67 +87,39 @@
 #include "servo.h"
 #include "dac.h"
 #include "can.h"
-#include "modnetwork.h"
+#include "subghz.h"
 
 #if MICROPY_PY_THREAD
-STATIC pyb_thread_t pyb_thread_main;
+static pyb_thread_t pyb_thread_main;
 #endif
 
 #if defined(MICROPY_HW_UART_REPL)
 #ifndef MICROPY_HW_UART_REPL_RXBUF
 #define MICROPY_HW_UART_REPL_RXBUF (260)
 #endif
-STATIC pyb_uart_obj_t pyb_uart_repl_obj;
-STATIC uint8_t pyb_uart_repl_rxbuf[MICROPY_HW_UART_REPL_RXBUF];
+static machine_uart_obj_t pyb_uart_repl_obj;
+static uint8_t pyb_uart_repl_rxbuf[MICROPY_HW_UART_REPL_RXBUF];
 #endif
-
-void flash_error(int n) {
-    for (int i = 0; i < n; i++) {
-        led_state(PYB_LED_RED, 1);
-        led_state(PYB_LED_GREEN, 0);
-        mp_hal_delay_ms(250);
-        led_state(PYB_LED_RED, 0);
-        led_state(PYB_LED_GREEN, 1);
-        mp_hal_delay_ms(250);
-    }
-    led_state(PYB_LED_GREEN, 0);
-}
-
-void NORETURN __fatal_error(const char *msg) {
-    for (volatile uint delay = 0; delay < 10000000; delay++) {
-    }
-    led_state(1, 1);
-    led_state(2, 1);
-    led_state(3, 1);
-    led_state(4, 1);
-    mp_hal_stdout_tx_strn("\nFATAL ERROR:\n", 14);
-    mp_hal_stdout_tx_strn(msg, strlen(msg));
-    for (uint i = 0;;) {
-        led_toggle(((i++) & 3) + 1);
-        for (volatile uint delay = 0; delay < 10000000; delay++) {
-        }
-        if (i >= 16) {
-            // to conserve power
-            __WFI();
-        }
-    }
-}
 
 void nlr_jump_fail(void *val) {
     printf("FATAL: uncaught exception %p\n", val);
     mp_obj_print_exception(&mp_plat_print, MP_OBJ_FROM_PTR(val));
-    __fatal_error("");
+    MICROPY_BOARD_FATAL_ERROR("");
+}
+
+void abort(void) {
+    MICROPY_BOARD_FATAL_ERROR("abort");
 }
 
 #ifndef NDEBUG
 void MP_WEAK __assert_func(const char *file, int line, const char *func, const char *expr) {
     (void)func;
     printf("Assertion '%s' failed, at file %s:%d\n", expr, file, line);
-    __fatal_error("");
+    MICROPY_BOARD_FATAL_ERROR("");
 }
 #endif
 
-STATIC mp_obj_t pyb_main(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+static mp_obj_t pyb_main(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
     static const mp_arg_t allowed_args[] = {
         { MP_QSTR_opt, MP_ARG_INT, {.u_int = 0} }
     };
@@ -160,10 +138,10 @@ STATIC mp_obj_t pyb_main(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_a
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(pyb_main_obj, 1, pyb_main);
 
-#if MICROPY_HW_ENABLE_STORAGE
+#if MICROPY_HW_FLASH_MOUNT_AT_BOOT
 // avoid inlining to avoid stack usage within main()
-MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
-    if (reset_mode == 3) {
+MP_NOINLINE static bool init_flash_fs(uint reset_mode) {
+    if (reset_mode == BOARDCTRL_RESET_MODE_FACTORY_FILESYSTEM) {
         // Asked by user to reset filesystem
         factory_reset_create_filesystem();
     }
@@ -171,48 +149,54 @@ MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
     // Default block device to entire flash storage
     mp_obj_t bdev = MP_OBJ_FROM_PTR(&pyb_flash_obj);
 
+    int ret;
+
     #if MICROPY_VFS_LFS1 || MICROPY_VFS_LFS2
 
-    // Try to detect the block device used for the main filesystem, based on the first block
-
-    uint8_t buf[FLASH_BLOCK_SIZE];
-    storage_read_blocks(buf, FLASH_PART1_START_BLOCK, 1);
-
+    // Try to detect the block device used for the main filesystem based on the
+    // contents of the superblock, which can be the first or second block.
     mp_int_t len = -1;
+    uint8_t buf[64];
+    for (size_t block_num = 0; block_num <= 1; ++block_num) {
+        ret = storage_readblocks_ext(buf, block_num, 0, sizeof(buf));
 
-    #if MICROPY_VFS_LFS1
-    if (memcmp(&buf[40], "littlefs", 8) == 0) {
-        // LFS1
-        lfs1_superblock_t *superblock = (void *)&buf[12];
-        uint32_t block_size = lfs1_fromle32(superblock->d.block_size);
-        uint32_t block_count = lfs1_fromle32(superblock->d.block_count);
-        len = block_count * block_size;
-    }
-    #endif
+        #if MICROPY_VFS_LFS1
+        if (ret == 0 && memcmp(&buf[40], "littlefs", 8) == 0) {
+            // LFS1
+            lfs1_superblock_t *superblock = (void *)&buf[12];
+            uint32_t block_size = lfs1_fromle32(superblock->d.block_size);
+            uint32_t block_count = lfs1_fromle32(superblock->d.block_count);
+            len = block_count * block_size;
+            break;
+        }
+        #endif
 
-    #if MICROPY_VFS_LFS2
-    if (memcmp(&buf[8], "littlefs", 8) == 0) {
-        // LFS2
-        lfs2_superblock_t *superblock = (void *)&buf[20];
-        uint32_t block_size = lfs2_fromle32(superblock->block_size);
-        uint32_t block_count = lfs2_fromle32(superblock->block_count);
-        len = block_count * block_size;
+        #if MICROPY_VFS_LFS2
+        if (ret == 0 && memcmp(&buf[8], "littlefs", 8) == 0) {
+            // LFS2
+            lfs2_superblock_t *superblock = (void *)&buf[20];
+            uint32_t block_size = lfs2_fromle32(superblock->block_size);
+            uint32_t block_count = lfs2_fromle32(superblock->block_count);
+            len = block_count * block_size;
+            break;
+        }
+        #endif
     }
-    #endif
 
     if (len != -1) {
         // Detected a littlefs filesystem so create correct block device for it
         mp_obj_t args[] = { MP_OBJ_NEW_QSTR(MP_QSTR_len), MP_OBJ_NEW_SMALL_INT(len) };
-        bdev = pyb_flash_type.make_new(&pyb_flash_type, 0, 1, args);
+        bdev = MP_OBJ_TYPE_GET_SLOT(&pyb_flash_type, make_new)(&pyb_flash_type, 0, 1, args);
     }
 
     #endif
 
     // Try to mount the flash on "/flash" and chdir to it for the boot-up directory.
     mp_obj_t mount_point = MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash);
-    int ret = mp_vfs_mount_and_chdir_protected(bdev, mount_point);
+    ret = mp_vfs_mount_and_chdir_protected(bdev, mount_point);
 
-    if (ret == -MP_ENODEV && bdev == MP_OBJ_FROM_PTR(&pyb_flash_obj) && reset_mode != 3) {
+    if (ret == -MP_ENODEV && bdev == MP_OBJ_FROM_PTR(&pyb_flash_obj)
+        && reset_mode != BOARDCTRL_RESET_MODE_FACTORY_FILESYSTEM) {
         // No filesystem, bdev is still the default (so didn't detect a possibly corrupt littlefs),
         // and didn't already create a filesystem, so try to create a fresh one now.
         ret = factory_reset_create_filesystem();
@@ -222,7 +206,7 @@ MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
     }
 
     if (ret != 0) {
-        printf("MPY: can't mount flash\n");
+        mp_printf(&mp_plat_print, "MPY: can't mount flash\n");
         return false;
     }
 
@@ -231,9 +215,9 @@ MP_NOINLINE STATIC bool init_flash_fs(uint reset_mode) {
 #endif
 
 #if MICROPY_HW_SDCARD_MOUNT_AT_BOOT
-STATIC bool init_sdcard_fs(void) {
+static bool init_sdcard_fs(void) {
     bool first_part = true;
-    for (int part_num = 1; part_num <= 4; ++part_num) {
+    for (int part_num = 1; part_num <= 5; ++part_num) {
         // create vfs object
         fs_user_mount_t *vfs_fat = m_new_obj_maybe(fs_user_mount_t);
         mp_vfs_mount_t *vfs = m_new_obj_maybe(mp_vfs_mount_t);
@@ -241,7 +225,16 @@ STATIC bool init_sdcard_fs(void) {
             break;
         }
         vfs_fat->blockdev.flags = MP_BLOCKDEV_FLAG_FREE_OBJ;
-        sdcard_init_vfs(vfs_fat, part_num);
+        if (part_num == 5) {
+            if (!first_part) {
+                break;
+            }
+            // partitions 1-4 couldn't be mounted, so try FATFS auto-detect mode
+            // which will work if there is no partition table, just a filesystem
+            sdcard_init_vfs(vfs_fat, 0);
+        } else {
+            sdcard_init_vfs(vfs_fat, part_num);
+        }
 
         // try to mount the partition
         FRESULT res = f_mount(&vfs_fat->fatfs);
@@ -298,7 +291,7 @@ STATIC bool init_sdcard_fs(void) {
     }
 
     if (first_part) {
-        printf("MPY: can't mount SD card\n");
+        mp_printf(&mp_plat_print, "MPY: can't mount SD card\n");
         return false;
     } else {
         return true;
@@ -306,94 +299,23 @@ STATIC bool init_sdcard_fs(void) {
 }
 #endif
 
-#if !MICROPY_HW_USES_BOOTLOADER
-STATIC uint update_reset_mode(uint reset_mode) {
-    #if MICROPY_HW_HAS_SWITCH
-    if (switch_get()) {
-
-        // The original method used on the pyboard is appropriate if you have 2
-        // or more LEDs.
-        #if defined(MICROPY_HW_LED2)
-        for (uint i = 0; i < 3000; i++) {
-            if (!switch_get()) {
-                break;
-            }
-            mp_hal_delay_ms(20);
-            if (i % 30 == 29) {
-                if (++reset_mode > 3) {
-                    reset_mode = 1;
-                }
-                led_state(2, reset_mode & 1);
-                led_state(3, reset_mode & 2);
-                led_state(4, reset_mode & 4);
-            }
-        }
-        // flash the selected reset mode
-        for (uint i = 0; i < 6; i++) {
-            led_state(2, 0);
-            led_state(3, 0);
-            led_state(4, 0);
-            mp_hal_delay_ms(50);
-            led_state(2, reset_mode & 1);
-            led_state(3, reset_mode & 2);
-            led_state(4, reset_mode & 4);
-            mp_hal_delay_ms(50);
-        }
-        mp_hal_delay_ms(400);
-
-        #elif defined(MICROPY_HW_LED1)
-
-        // For boards with only a single LED, we'll flash that LED the
-        // appropriate number of times, with a pause between each one
-        for (uint i = 0; i < 10; i++) {
-            led_state(1, 0);
-            for (uint j = 0; j < reset_mode; j++) {
-                if (!switch_get()) {
-                    break;
-                }
-                led_state(1, 1);
-                mp_hal_delay_ms(100);
-                led_state(1, 0);
-                mp_hal_delay_ms(200);
-            }
-            mp_hal_delay_ms(400);
-            if (!switch_get()) {
-                break;
-            }
-            if (++reset_mode > 3) {
-                reset_mode = 1;
-            }
-        }
-        // Flash the selected reset mode
-        for (uint i = 0; i < 2; i++) {
-            for (uint j = 0; j < reset_mode; j++) {
-                led_state(1, 1);
-                mp_hal_delay_ms(100);
-                led_state(1, 0);
-                mp_hal_delay_ms(200);
-            }
-            mp_hal_delay_ms(400);
-        }
-        #else
-        #error Need a reset mode update method
-        #endif
-    }
-    #endif
-    return reset_mode;
-}
-#endif
-
 void stm32_main(uint32_t reset_mode) {
+    // Low-level MCU initialisation.
+    stm32_system_init();
+
     #if !defined(STM32F0) && defined(MICROPY_HW_VTOR)
     // Change IRQ vector table if configured differently
     SCB->VTOR = MICROPY_HW_VTOR;
     #endif
 
+    #if __CORTEX_M != 33
     // Enable 8-byte stack alignment for IRQ handlers, in accord with EABI
     SCB->CCR |= SCB_CCR_STKALIGN_Msk;
+    #endif
 
-    // Check if bootloader should be entered instead of main application
-    powerctrl_check_enter_bootloader();
+    // Hook for a board to run code at start up, for example check if a
+    // bootloader should be entered instead of the main application.
+    MICROPY_BOARD_STARTUP();
 
     // Enable caches and prefetch buffers
 
@@ -417,6 +339,10 @@ void stm32_main(uint32_t reset_mode) {
 
     SCB_EnableICache();
     SCB_EnableDCache();
+
+    #elif defined(STM32H5)
+
+    HAL_ICACHE_Enable();
 
     #elif defined(STM32L4)
 
@@ -445,14 +371,6 @@ void stm32_main(uint32_t reset_mode) {
     // set the system clock to be HSE
     SystemClock_Config();
 
-    // enable GPIO clocks
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    #if defined(GPIOD)
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-    #endif
-
     #if defined(STM32F4) || defined(STM32F7)
     #if defined(__HAL_RCC_DTCMRAMEN_CLK_ENABLE)
     // The STM32F746 doesn't really have CCM memory, but it does have DTCM,
@@ -462,28 +380,40 @@ void stm32_main(uint32_t reset_mode) {
     // enable the CCM RAM
     __HAL_RCC_CCMDATARAMEN_CLK_ENABLE();
     #endif
+    #elif defined(STM32H7A3xx) || defined(STM32H7A3xxQ) || defined(STM32H7B3xx) || defined(STM32H7B3xxQ)
+    // Enable SRAM clock.
+    __HAL_RCC_SRDSRAM_CLK_ENABLE();
     #elif defined(STM32H7)
     // Enable D2 SRAM1/2/3 clocks.
     __HAL_RCC_D2SRAM1_CLK_ENABLE();
     __HAL_RCC_D2SRAM2_CLK_ENABLE();
+    #if defined(__HAL_RCC_D2SRAM3_CLK_ENABLE)
     __HAL_RCC_D2SRAM3_CLK_ENABLE();
     #endif
-
-
-    #if defined(MICROPY_BOARD_EARLY_INIT)
-    MICROPY_BOARD_EARLY_INIT();
     #endif
 
+    MICROPY_BOARD_EARLY_INIT();
+
     // basic sub-system init
+    #if defined(STM32H5)
+    volatile uint32_t *src = (volatile uint32_t *)UID_BASE;
+    uint32_t *dest = (uint32_t *)&mp_hal_unique_id_address[0];
+    dest[0] = src[0];
+    dest[1] = src[1];
+    dest[2] = src[2];
+    #endif
     #if defined(STM32WB)
     rfcore_init();
+    #endif
+    #if defined(STM32WL)
+    subghz_init();
     #endif
     #if MICROPY_HW_SDRAM_SIZE
     sdram_init();
     bool sdram_valid = true;
     UNUSED(sdram_valid);
     #if MICROPY_HW_SDRAM_STARTUP_TEST
-    sdram_valid = sdram_test(true);
+    sdram_valid = sdram_test(false);
     #endif
     #endif
     #if MICROPY_PY_THREAD
@@ -494,16 +424,33 @@ void stm32_main(uint32_t reset_mode) {
     #if MICROPY_HW_HAS_SWITCH
     switch_init0();
     #endif
+    #if MICROPY_PY_MACHINE
     machine_init();
+    #endif
     #if MICROPY_HW_ENABLE_RTC
     rtc_init_start(false);
     #endif
     uart_init0();
+
+    #if defined(MICROPY_HW_UART_REPL)
+    // Set up a UART REPL using a statically allocated object
+    pyb_uart_repl_obj.base.type = &machine_uart_type;
+    pyb_uart_repl_obj.uart_id = MICROPY_HW_UART_REPL;
+    pyb_uart_repl_obj.is_static = true;
+    pyb_uart_repl_obj.timeout = 0;
+    pyb_uart_repl_obj.timeout_char = 2;
+    uart_init(&pyb_uart_repl_obj, MICROPY_HW_UART_REPL_BAUD, UART_WORDLENGTH_8B, UART_PARITY_NONE, UART_STOPBITS_1, 0);
+    uart_set_rxbuf(&pyb_uart_repl_obj, sizeof(pyb_uart_repl_rxbuf), pyb_uart_repl_rxbuf);
+    uart_attach_to_repl(&pyb_uart_repl_obj, true);
+    MP_STATE_PORT(machine_uart_obj_all)[MICROPY_HW_UART_REPL - 1] = &pyb_uart_repl_obj;
+    MP_STATE_PORT(pyb_stdio_uart) = &pyb_uart_repl_obj;
+    #endif
+
     spi_init0();
     #if MICROPY_PY_PYB_LEGACY && MICROPY_HW_ENABLE_HW_I2C
     i2c_init0();
     #endif
-    #if MICROPY_HW_ENABLE_SDCARD
+    #if MICROPY_HW_ENABLE_SDCARD || MICROPY_HW_ENABLE_MMCARD
     sdcard_init();
     #endif
     #if MICROPY_HW_ENABLE_STORAGE
@@ -520,8 +467,7 @@ void stm32_main(uint32_t reset_mode) {
     systick_enable_dispatch(SYSTICK_DISPATCH_LWIP, mod_network_lwip_poll_wrapper);
     #endif
     #if MICROPY_PY_BLUETOOTH
-    extern void mp_bluetooth_hci_poll_wrapper(uint32_t ticks_ms);
-    systick_enable_dispatch(SYSTICK_DISPATCH_BLUETOOTH_HCI, mp_bluetooth_hci_poll_wrapper);
+    mp_bluetooth_hci_init();
     #endif
 
     #if MICROPY_PY_NETWORK_CYW43
@@ -531,39 +477,20 @@ void stm32_main(uint32_t reset_mode) {
         memcpy(&buf[0], "PYBD", 4);
         mp_hal_get_mac_ascii(MP_HAL_MAC_WLAN0, 8, 4, (char *)&buf[4]);
         cyw43_wifi_ap_set_ssid(&cyw43_state, 8, buf);
+        cyw43_wifi_ap_set_auth(&cyw43_state, CYW43_AUTH_WPA2_MIXED_PSK);
         cyw43_wifi_ap_set_password(&cyw43_state, 8, (const uint8_t *)"pybd0123");
     }
     #endif
 
-    #if defined(MICROPY_HW_UART_REPL)
-    // Set up a UART REPL using a statically allocated object
-    pyb_uart_repl_obj.base.type = &pyb_uart_type;
-    pyb_uart_repl_obj.uart_id = MICROPY_HW_UART_REPL;
-    pyb_uart_repl_obj.is_static = true;
-    pyb_uart_repl_obj.timeout = 0;
-    pyb_uart_repl_obj.timeout_char = 2;
-    uart_init(&pyb_uart_repl_obj, MICROPY_HW_UART_REPL_BAUD, UART_WORDLENGTH_8B, UART_PARITY_NONE, UART_STOPBITS_1, 0);
-    uart_set_rxbuf(&pyb_uart_repl_obj, sizeof(pyb_uart_repl_rxbuf), pyb_uart_repl_rxbuf);
-    uart_attach_to_repl(&pyb_uart_repl_obj, true);
-    MP_STATE_PORT(pyb_uart_obj_all)[MICROPY_HW_UART_REPL - 1] = &pyb_uart_repl_obj;
-    #endif
+    boardctrl_state_t state;
+    state.reset_mode = reset_mode;
+    state.log_soft_reset = false;
+
+    MICROPY_BOARD_BEFORE_SOFT_RESET_LOOP(&state);
 
 soft_reset:
 
-    #if defined(MICROPY_HW_LED2)
-    led_state(1, 0);
-    led_state(2, 1);
-    #else
-    led_state(1, 1);
-    led_state(2, 0);
-    #endif
-    led_state(3, 0);
-    led_state(4, 0);
-
-    #if !MICROPY_HW_USES_BOOTLOADER
-    // check if user switch held to select the reset mode
-    reset_mode = update_reset_mode(1);
-    #endif
+    MICROPY_BOARD_TOP_SOFT_RESET_LOOP(&state);
 
     // Python threading init
     #if MICROPY_PY_THREAD
@@ -586,20 +513,11 @@ soft_reset:
 
     // MicroPython init
     mp_init();
-    mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_path), 0);
-    mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR_)); // current dir (or base dir of the script)
-    mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_argv), 0);
 
     // Initialise low-level sub-systems.  Here we need to very basic things like
     // zeroing out memory and resetting any of the sub-systems.  Following this
     // we can run Python scripts (eg boot.py), but anything that is configurable
     // by boot.py must be set after boot.py is run.
-
-    #if defined(MICROPY_HW_UART_REPL)
-    MP_STATE_PORT(pyb_stdio_uart) = &pyb_uart_repl_obj;
-    #else
-    MP_STATE_PORT(pyb_stdio_uart) = NULL;
-    #endif
 
     readline_init0();
     pin_init0();
@@ -614,11 +532,15 @@ soft_reset:
     pyb_usb_init0();
     #endif
 
+    #if MICROPY_PY_MACHINE_I2S
+    machine_i2s_init0();
+    #endif
+
     // Initialise the local flash filesystem.
     // Create it if needed, mount in on /flash, and set it as current dir.
     bool mounted_flash = false;
-    #if MICROPY_HW_ENABLE_STORAGE
-    mounted_flash = init_flash_fs(reset_mode);
+    #if MICROPY_HW_FLASH_MOUNT_AT_BOOT
+    mounted_flash = init_flash_fs(state.reset_mode);
     #endif
 
     bool mounted_sdcard = false;
@@ -652,29 +574,15 @@ soft_reset:
     // reset config variables; they should be set by boot.py
     MP_STATE_PORT(pyb_config_main) = MP_OBJ_NULL;
 
-    // run boot.py, if it exists
-    // TODO perhaps have pyb.reboot([bootpy]) function to soft-reboot and execute custom boot.py
-    if (reset_mode == 1 || reset_mode == 3) {
-        const char *boot_py = "boot.py";
-        int ret = pyexec_file_if_exists(boot_py);
-        if (ret & PYEXEC_FORCED_EXIT) {
-            goto soft_reset_exit;
-        }
-        if (!ret) {
-            flash_error(4);
-        }
-    }
-
-    // turn boot-up LEDs off
-    #if !defined(MICROPY_HW_LED2)
-    // If there is only one LED on the board then it's used to signal boot-up
-    // and so we turn it off here.  Otherwise LED(1) is used to indicate dirty
-    // flash cache and so we shouldn't change its state.
-    led_state(1, 0);
+    // Run optional frozen boot code.
+    #ifdef MICROPY_BOARD_FROZEN_BOOT_FILE
+    pyexec_frozen_module(MICROPY_BOARD_FROZEN_BOOT_FILE, false);
     #endif
-    led_state(2, 0);
-    led_state(3, 0);
-    led_state(4, 0);
+
+    // Run boot.py (or whatever else a board configures at this stage).
+    if (MICROPY_BOARD_RUN_BOOT_PY(&state) == BOARDCTRL_GOTO_SOFT_RESET_EXIT) {
+        goto soft_reset_exit;
+    }
 
     // Now we initialise sub-systems that need configuration from boot.py,
     // or whose initialisation can be safely deferred until after running
@@ -684,13 +592,13 @@ soft_reset:
     // init USB device to default setting if it was not already configured
     if (!(pyb_usb_flags & PYB_USB_FLAG_USB_MODE_CALLED)) {
         #if MICROPY_HW_USB_MSC
-        const uint16_t pid = USBD_PID_CDC_MSC;
+        const uint16_t pid = MICROPY_HW_USB_PID_CDC_MSC;
         const uint8_t mode = USBD_MODE_CDC_MSC;
         #else
-        const uint16_t pid = USBD_PID_CDC;
+        const uint16_t pid = MICROPY_HW_USB_PID_CDC;
         const uint8_t mode = USBD_MODE_CDC;
         #endif
-        pyb_usb_dev_init(pyb_usb_dev_detect(), USBD_VID, pid, mode, 0, NULL, NULL);
+        pyb_usb_dev_init(pyb_usb_dev_detect(), MICROPY_HW_USB_VID, pid, mode, 0, NULL, NULL);
     }
     #endif
 
@@ -709,21 +617,9 @@ soft_reset:
 
     // At this point everything is fully configured and initialised.
 
-    // Run the main script from the current directory.
-    if ((reset_mode == 1 || reset_mode == 3) && pyexec_mode_kind == PYEXEC_MODE_FRIENDLY_REPL) {
-        const char *main_py;
-        if (MP_STATE_PORT(pyb_config_main) == MP_OBJ_NULL) {
-            main_py = "main.py";
-        } else {
-            main_py = mp_obj_str_get_str(MP_STATE_PORT(pyb_config_main));
-        }
-        int ret = pyexec_file_if_exists(main_py);
-        if (ret & PYEXEC_FORCED_EXIT) {
-            goto soft_reset_exit;
-        }
-        if (!ret) {
-            flash_error(3);
-        }
+    // Run main.py (or whatever else a board configures at this stage).
+    if (MICROPY_BOARD_RUN_MAIN_PY(&state) == BOARDCTRL_GOTO_SOFT_RESET_EXIT) {
+        goto soft_reset_exit;
     }
 
     #if MICROPY_ENABLE_COMPILER
@@ -746,14 +642,24 @@ soft_reset_exit:
 
     // soft reset
 
+    MICROPY_BOARD_START_SOFT_RESET(&state);
+
     #if MICROPY_HW_ENABLE_STORAGE
-    printf("MPY: sync filesystems\n");
+    if (state.log_soft_reset) {
+        mp_printf(&mp_plat_print, "MPY: sync filesystems\n");
+    }
     storage_flush();
     #endif
 
-    printf("MPY: soft reboot\n");
-    #if MICROPY_BLUETOOTH_NIMBLE
+    if (state.log_soft_reset) {
+        mp_printf(&mp_plat_print, "MPY: soft reboot\n");
+    }
+
+    #if MICROPY_PY_BLUETOOTH
     mp_bluetooth_deinit();
+    #endif
+    #if defined(STM32WL)
+    subghz_deinit();
     #endif
     #if MICROPY_PY_NETWORK
     mod_network_deinit();
@@ -764,13 +670,29 @@ soft_reset_exit:
     #if MICROPY_HW_ENABLE_CAN
     can_deinit_all();
     #endif
+    #if MICROPY_HW_ENABLE_DAC
+    dac_deinit_all();
+    #endif
+    #if MICROPY_PY_MACHINE
     machine_deinit();
+    #endif
 
     #if MICROPY_PY_THREAD
     pyb_thread_deinit();
     #endif
 
+    #if defined(MICROPY_HW_UART_REPL)
+    MP_STATE_PORT(pyb_stdio_uart) = &pyb_uart_repl_obj;
+    #else
+    MP_STATE_PORT(pyb_stdio_uart) = NULL;
+    #endif
+
+    MICROPY_BOARD_END_SOFT_RESET(&state);
+
     gc_sweep_all();
+    mp_deinit();
 
     goto soft_reset;
 }
+
+MP_REGISTER_ROOT_POINTER(mp_obj_t pyb_config_main);

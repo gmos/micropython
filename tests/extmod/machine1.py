@@ -1,10 +1,8 @@
 # test machine module
 
 try:
-    try:
-        import umachine as machine
-    except ImportError:
-        import machine
+    import machine
+
     machine.mem8
 except:
     print("SKIP")
@@ -24,5 +22,25 @@ except ValueError:
 
 try:
     del machine.mem8[0]
+except TypeError:
+    print("TypeError")
+
+try:
+    machine.mem8[0:1]
+except TypeError:
+    print("TypeError")
+
+try:
+    machine.mem8[0:1] = 10
+except TypeError:
+    print("TypeError")
+
+try:
+    machine.mem8["hello"]
+except TypeError:
+    print("TypeError")
+
+try:
+    machine.mem8["hello"] = 10
 except TypeError:
     print("TypeError")

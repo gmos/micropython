@@ -31,6 +31,13 @@
 
 #define MP_BLUETOOTH_NIMBLE_MAX_SERVICES (8)
 
+typedef struct _mp_bluetooth_nimble_pending_characteristic_t {
+    uint16_t value_handle;
+    uint8_t properties;
+    mp_obj_bluetooth_uuid_t uuid;
+    uint8_t ready;
+} mp_bluetooth_nimble_pending_characteristic_t;
+
 typedef struct _mp_bluetooth_nimble_root_pointers_t {
     // Characteristic (and descriptor) value storage.
     mp_gatts_db_t gatts_db;
@@ -38,20 +45,49 @@ typedef struct _mp_bluetooth_nimble_root_pointers_t {
     // Pending service definitions.
     size_t n_services;
     struct ble_gatt_svc_def *services[MP_BLUETOOTH_NIMBLE_MAX_SERVICES];
+
+    #if MICROPY_PY_BLUETOOTH_ENABLE_L2CAP_CHANNELS
+    // L2CAP channels.
+    struct _mp_bluetooth_nimble_l2cap_channel_t *l2cap_chan;
+    bool l2cap_listening;
+    #endif
+
+    #if MICROPY_PY_BLUETOOTH_ENABLE_GATT_CLIENT
+    // Workaround to allow us to get the end_handle of each characteristic
+    // during discovery. See mp_bluetooth_gattc_discover_characteristics().
+    uint16_t char_disc_end_handle;
+    const mp_obj_bluetooth_uuid_t *char_filter_uuid;
+    mp_bluetooth_nimble_pending_characteristic_t pending_char_result;
+    #endif
 } mp_bluetooth_nimble_root_pointers_t;
 
 enum {
     MP_BLUETOOTH_NIMBLE_BLE_STATE_OFF,
     MP_BLUETOOTH_NIMBLE_BLE_STATE_STARTING,
+    MP_BLUETOOTH_NIMBLE_BLE_STATE_WAITING_FOR_SYNC,
     MP_BLUETOOTH_NIMBLE_BLE_STATE_ACTIVE,
     MP_BLUETOOTH_NIMBLE_BLE_STATE_STOPPING,
 };
 
 extern volatile int mp_bluetooth_nimble_ble_state;
 
-void mp_bluetooth_nimble_port_preinit(void);
-void mp_bluetooth_nimble_port_postinit(void);
-void mp_bluetooth_nimble_port_deinit(void);
+// --- Optionally provided by the MicroPython port. ---------------------------
+// (default implementations provided by modbluetooth_nimble.c)
+
+// Tell the port to init the UART and start the HCI controller.
+void mp_bluetooth_nimble_port_hci_init(void);
+
+// Tell the port to deinit the UART and shutdown the HCI controller.
+void mp_bluetooth_nimble_port_hci_deinit(void);
+
+// Tell the port to run its background task (i.e. poll the UART and pump events).
 void mp_bluetooth_nimble_port_start(void);
+
+// Tell the port to stop its background task.
+void mp_bluetooth_nimble_port_shutdown(void);
+
+// --- Called by the HCI UART layer to let us know when packets have been sent.
+void mp_bluetooth_nimble_sent_hci_packet(void);
+
 
 #endif // MICROPY_INCLUDED_EXTMOD_NIMBLE_MODBLUETOOTH_NIMBLE_H

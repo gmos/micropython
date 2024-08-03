@@ -31,15 +31,35 @@ mcu_default = MCU(
     range_vco_out=range(192, 432 + 1),
 )
 
-mcu_h7 = MCU(
-    range_sysclk=range(2, 400 + 1, 2),  # above 400MHz currently unsupported
-    range_m=range(1, 63 + 1),
-    range_n=range(4, 512 + 1),
-    range_p=range(2, 128 + 1, 2),
-    range_q=range(1, 128 + 1),
-    range_vco_in=range(1, 16 + 1),
-    range_vco_out=range(150, 960 + 1),  # 150-420=medium, 192-960=wide
-)
+mcu_table = {
+    "stm32f413": MCU(
+        range_sysclk=range(2, 100 + 1, 2),
+        range_m=range(2, 63 + 1),
+        range_n=range(50, 432 + 1),
+        range_p=range(2, 8 + 1, 2),
+        range_q=range(2, 15 + 1),
+        range_vco_in=range(1, 2 + 1),
+        range_vco_out=range(100, 432 + 1),
+    ),
+    "stm32h5": MCU(
+        range_sysclk=range(2, 250 + 1, 2),
+        range_m=range(1, 63 + 1),
+        range_n=range(4, 512 + 1),
+        range_p=range(2, 128 + 1, 2),
+        range_q=range(1, 128 + 1),
+        range_vco_in=range(1, 16 + 1),
+        range_vco_out=range(150, 836 + 1),  # 150-420=medium, 192-836=wide
+    ),
+    "stm32h7": MCU(
+        range_sysclk=range(2, 400 + 1, 2),  # above 400MHz currently unsupported
+        range_m=range(1, 63 + 1),
+        range_n=range(4, 512 + 1),
+        range_p=range(2, 128 + 1, 2),
+        range_q=range(1, 128 + 1),
+        range_vco_in=range(1, 16 + 1),
+        range_vco_out=range(150, 960 + 1),  # 150-420=medium, 192-960=wide
+    ),
+}
 
 
 def close_int(x):
@@ -83,7 +103,7 @@ def compute_pll2(hse, sys, relax_pll48):
     fallback = None
     for P in mcu.range_p:
         # VCO_OUT must be between 192MHz and 432MHz
-        if not sys * P in mcu.range_vco_out:
+        if sys * P not in mcu.range_vco_out:
             continue
         NbyM = float(sys * P) / hse  # float for Python 2
         # scan M
@@ -240,7 +260,7 @@ def main():
     argv = sys.argv[1:]
 
     c_table = False
-    mcu_series = "f4"
+    mcu_series = "stm32f4"
     hse = None
     hsi = None
 
@@ -263,21 +283,19 @@ def main():
         hse, hsi = search_header_for_hsx_values(argv[0][5:], [None, None])
         if hse is None:
             raise ValueError("%s does not contain a definition of HSE_VALUE" % argv[0])
-        if hsi is not None and hsi > 16:
-            # Currently, a HSI value greater than 16MHz is not supported
-            hsi = None
     else:
         # HSE given directly as an integer
         hse = int(argv[0])
 
     # Select MCU parameters
-    if mcu_series == "h7":
-        mcu = mcu_h7
-    else:
-        mcu = mcu_default
+    mcu = mcu_default
+    for m in mcu_table:
+        if mcu_series.startswith(m):
+            mcu = mcu_table[m]
+            break
 
-    # Relax constraight on PLLQ being 48MHz on F7 and H7 MCUs, which have separate PLLs for 48MHz
-    relax_pll48 = mcu_series in ("f7", "h7")
+    # Relax constraint on PLLQ being 48MHz on MCUs which have separate PLLs for 48MHz
+    relax_pll48 = mcu_series.startswith(("stm32f413", "stm32f7", "stm32h5", "stm32h7"))
 
     hse_valid_plls = compute_pll_table(hse, relax_pll48)
     if hsi is not None:

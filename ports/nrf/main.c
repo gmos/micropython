@@ -38,12 +38,13 @@
 #include "py/stackctrl.h"
 #include "py/gc.h"
 #include "py/compile.h"
-#include "lib/utils/pyexec.h"
+#include "extmod/modmachine.h"
+#include "shared/runtime/pyexec.h"
 #include "readline.h"
 #include "gccollect.h"
 #include "modmachine.h"
 #include "modmusic.h"
-#include "modules/uos/microbitfs.h"
+#include "modules/os/microbitfs.h"
 #include "led.h"
 #include "uart.h"
 #include "nrf.h"
@@ -52,6 +53,8 @@
 #include "i2c.h"
 #include "adc.h"
 #include "rtcounter.h"
+#include "mphalport.h"
+
 #if MICROPY_PY_MACHINE_HW_PWM
 #include "pwm.h"
 #endif
@@ -70,8 +73,15 @@
 #include "softpwm.h"
 #endif
 
-#if MICROPY_HW_USB_CDC
+#if MICROPY_HW_ENABLE_USBDEV && MICROPY_HW_USB_CDC
 #include "usb_cdc.h"
+#endif
+
+#if MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE
+#include "extmod/vfs_fat.h"
+#include "lib/oofatfs/ff.h"
+#include "extmod/vfs.h"
+#include "flashbdev.h"
 #endif
 
 void do_str(const char *src, mp_parse_input_kind_t input_kind) {
@@ -97,10 +107,18 @@ void do_str(const char *src, mp_parse_input_kind_t input_kind) {
 extern uint32_t _heap_start;
 extern uint32_t _heap_end;
 
-int main(int argc, char **argv) {
+void NORETURN _start(void) {
+    // Hook for a board to run code at start up, for example check if a
+    // bootloader should be entered instead of the main application.
+    MICROPY_BOARD_STARTUP();
 
+    MICROPY_BOARD_EARLY_INIT();
 
 soft_reset:
+
+    #if MICROPY_PY_TIME_TICKS
+    rtc1_init_time_ticks();
+    #endif
 
     led_init();
 
@@ -117,14 +135,9 @@ soft_reset:
     gc_init(&_heap_start, &_heap_end);
 
     mp_init();
-    mp_obj_list_init(mp_sys_path, 0);
-    mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR_)); // current dir (or base dir of the script)
-    mp_obj_list_init(mp_sys_argv, 0);
-
     readline_init0();
 
-
-    #if MICROPY_PY_MACHINE_HW_SPI
+    #if MICROPY_PY_MACHINE_SPI
     spi_init0();
     #endif
 
@@ -144,7 +157,7 @@ soft_reset:
     rtc_init0();
     #endif
 
-    #if MICROPY_PY_MACHINE_TIMER
+    #if MICROPY_PY_MACHINE_TIMER_NRF
     timer_init0();
     #endif
 
@@ -152,17 +165,37 @@ soft_reset:
     uart_init0();
     #endif
 
-    #if (MICROPY_PY_BLE_NUS == 0) && (MICROPY_HW_USB_CDC == 0)
+    #if MICROPY_HW_ENABLE_UART_REPL
     {
         mp_obj_t args[2] = {
-            MP_OBJ_NEW_SMALL_INT(0),
-            MP_OBJ_NEW_SMALL_INT(115200),
+            MP_OBJ_NEW_SMALL_INT(MICROPY_HW_UART_REPL),
+            MP_OBJ_NEW_SMALL_INT(MICROPY_HW_UART_REPL_BAUD),
         };
-        MP_STATE_PORT(board_stdio_uart) = machine_hard_uart_type.make_new((mp_obj_t)&machine_hard_uart_type, MP_ARRAY_SIZE(args), 0, args);
+        MP_STATE_VM(dupterm_objs[0]) = MP_OBJ_TYPE_GET_SLOT(&machine_uart_type, make_new)((mp_obj_t)&machine_uart_type, MP_ARRAY_SIZE(args), 0, args);
     }
     #endif
 
     pin_init0();
+
+    #if MICROPY_HW_ENABLE_INTERNAL_FLASH_STORAGE
+    flashbdev_init();
+
+    // Try to mount the flash on "/flash" and chdir to it for the boot-up directory.
+    mp_obj_t mount_point = MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash);
+    int ret = mp_vfs_mount_and_chdir_protected((mp_obj_t)&nrf_flash_obj, mount_point);
+
+    if ((ret == -MP_ENODEV) || (ret == -MP_EIO)) {
+        pyexec_frozen_module("_mkfs.py", false); // Frozen script for formatting flash filesystem.
+        ret = mp_vfs_mount_and_chdir_protected((mp_obj_t)&nrf_flash_obj, mount_point);
+    }
+
+    if (ret != 0) {
+        printf("MPY: can't mount flash\n");
+    } else {
+        mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash));
+        mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_flash_slash_lib));
+    }
+    #endif
 
     #if MICROPY_MBFS
     microbit_filesystem_init();
@@ -229,13 +262,17 @@ soft_reset:
     led_state(1, 0);
 
     #if MICROPY_VFS || MICROPY_MBFS || MICROPY_MODULE_FROZEN
-    // run boot.py and main.py if they exist.
-    pyexec_file_if_exists("boot.py");
-    pyexec_file_if_exists("main.py");
+    ret_code = pyexec_file_if_exists("boot.py");
     #endif
 
-    #if MICROPY_HW_USB_CDC
+    #if MICROPY_HW_ENABLE_USBDEV && MICROPY_HW_USB_CDC
     usb_cdc_init();
+    #endif
+
+    #if MICROPY_VFS || MICROPY_MBFS || MICROPY_MODULE_FROZEN
+    if (pyexec_mode_kind == PYEXEC_MODE_FRIENDLY_REPL && ret_code != 0) {
+        pyexec_file_if_exists("main.py");
+    }
     #endif
 
     for (;;) {
@@ -251,6 +288,10 @@ soft_reset:
         }
     }
 
+    #if MICROPY_PY_MACHINE_HW_PWM
+    pwm_deinit_all();
+    #endif
+
     mp_deinit();
 
     printf("MPY: soft reboot\n");
@@ -260,29 +301,27 @@ soft_reset:
     #endif
 
     goto soft_reset;
-
-    return 0;
 }
 
 #if !MICROPY_VFS
 #if MICROPY_MBFS
 // Use micro:bit filesystem
-mp_lexer_t *mp_lexer_new_from_file(const char *filename) {
-    return uos_mbfs_new_reader(filename);
+mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
+    return os_mbfs_new_reader(qstr_str(filename));
 }
 
 mp_import_stat_t mp_import_stat(const char *path) {
-    return uos_mbfs_import_stat(path);
+    return os_mbfs_import_stat(path);
 }
 
-STATIC mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args) {
-    return uos_mbfs_open(n_args, args);
+mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+    return os_mbfs_open(n_args, args);
 }
-MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_builtin_open_obj, 1, 2, mp_builtin_open);
+MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 #else
 // use dummy functions - no filesystem available
-mp_lexer_t *mp_lexer_new_from_file(const char *filename) {
+mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
     mp_raise_OSError(MP_ENOENT);
 }
 
@@ -290,7 +329,7 @@ mp_import_stat_t mp_import_stat(const char *path) {
     return MP_IMPORT_STAT_NO_EXIST;
 }
 
-STATIC mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
+mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
     mp_raise_OSError(MP_EPERM);
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
@@ -329,8 +368,4 @@ void nlr_jump_fail(void *val) {
 void MP_WEAK __assert_func(const char *file, int line, const char *func, const char *expr) {
     printf("Assertion '%s' failed, at file %s:%d\n", expr, file, line);
     __fatal_error("Assertion failed");
-}
-
-void _start(void) {
-    main(0, NULL);
 }

@@ -2,21 +2,38 @@
 
 ifeq ($(MICROPY_BLUETOOTH_NIMBLE),1)
 
-EXTMOD_SRC_C += extmod/nimble/modbluetooth_nimble.c
+EXTMOD_DIR = extmod
+NIMBLE_EXTMOD_DIR = $(EXTMOD_DIR)/nimble
 
-CFLAGS_MOD += -DMICROPY_BLUETOOTH_NIMBLE=1
+SRC_EXTMOD_C += $(NIMBLE_EXTMOD_DIR)/modbluetooth_nimble.c
 
-NIMBLE_EXTMOD_DIR = extmod/nimble
+CFLAGS_EXTMOD += -DMICROPY_BLUETOOTH_NIMBLE=1
 
 # Use NimBLE from the submodule in lib/mynewt-nimble by default,
 # allowing a port to use their own system version (e.g. ESP32).
 MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY ?= 0
 
+CFLAGS_EXTMOD += -DMICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY=$(MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY)
+
 ifeq ($(MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY),0)
+
+GIT_SUBMODULES += lib/mynewt-nimble
+
+# On all ports where we provide the full implementation (i.e. not just
+# bindings like on ESP32), then we don't need to use the ringbuffer. In this
+# case, all NimBLE events are run by the MicroPython scheduler. On Unix, the
+# scheduler is also responsible for polling the UART, whereas on STM32 the
+# UART is also polled by the RX IRQ.
+CFLAGS_EXTMOD += -DMICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS=1
+
+# Without the ringbuffer, and with the full implementation, we can also
+# enable pairing and bonding. This requires both synchronous events and
+# some customisation of the key store.
+CFLAGS_EXTMOD += -DMICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING=1
 
 NIMBLE_LIB_DIR = lib/mynewt-nimble
 
-SRC_LIB += $(addprefix $(NIMBLE_LIB_DIR)/, \
+SRC_THIRDPARTY_C += $(addprefix $(NIMBLE_LIB_DIR)/, \
 	$(addprefix ext/tinycrypt/src/, \
 		aes_encrypt.c \
 		cmac_mode.c \
@@ -40,7 +57,6 @@ SRC_LIB += $(addprefix $(NIMBLE_LIB_DIR)/, \
 		ble_hs.c \
 		ble_hs_cfg.c \
 		ble_hs_conn.c \
-		ble_hs_dbg.c \
 		ble_hs_flow.c \
 		ble_hs_hci.c \
 		ble_hs_hci_cmd.c \
@@ -69,7 +85,6 @@ SRC_LIB += $(addprefix $(NIMBLE_LIB_DIR)/, \
 		ble_store_util.c \
 		ble_uuid.c \
 		) \
-	nimble/host/store/ram/src/ble_store_ram.c \
 	nimble/host/util/src/addr.c \
 	nimble/transport/uart/src/ble_hci_uart.c \
 	$(addprefix porting/nimble/src/, \
@@ -81,9 +96,10 @@ SRC_LIB += $(addprefix $(NIMBLE_LIB_DIR)/, \
 		os_msys_init.c \
 		) \
 	)
+	# nimble/host/store/ram/src/ble_store_ram.c \
 
-EXTMOD_SRC_C += $(addprefix $(NIMBLE_EXTMOD_DIR)/, \
-	nimble/npl_os.c \
+SRC_THIRDPARTY_C += $(addprefix $(NIMBLE_EXTMOD_DIR)/, \
+	nimble/nimble_npl_os.c \
 	hal/hal_uart.c \
 	)
 
@@ -99,7 +115,7 @@ INC += -I$(TOP)/$(NIMBLE_LIB_DIR)/nimble/include
 INC += -I$(TOP)/$(NIMBLE_LIB_DIR)/nimble/transport/uart/include
 INC += -I$(TOP)/$(NIMBLE_LIB_DIR)/porting/nimble/include
 
-$(BUILD)/$(NIMBLE_LIB_DIR)/%.o: CFLAGS += -Wno-maybe-uninitialized -Wno-pointer-arith -Wno-unused-but-set-variable -Wno-format
+$(BUILD)/$(NIMBLE_LIB_DIR)/%.o: CFLAGS += -Wno-maybe-uninitialized -Wno-pointer-arith -Wno-unused-but-set-variable -Wno-format -Wno-sign-compare -Wno-old-style-declaration
 
 endif
 

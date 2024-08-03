@@ -1,14 +1,14 @@
-import uos
+import vfs
 import network
 from flashbdev import bdev
 
 
 def wifi():
-    import ubinascii
+    import binascii
 
     ap_if = network.WLAN(network.AP_IF)
-    essid = b"MicroPython-%s" % ubinascii.hexlify(ap_if.config("mac")[-3:])
-    ap_if.config(essid=essid, authmode=network.AUTH_WPA_WPA2_PSK, password=b"micropythoN")
+    ssid = b"MicroPython-%s" % binascii.hexlify(ap_if.config("mac")[-3:])
+    ap_if.config(ssid=ssid, security=network.AUTH_WPA_WPA2_PSK, key=b"micropythoN")
 
 
 def check_bootsec():
@@ -26,17 +26,20 @@ def check_bootsec():
 
 def fs_corrupted():
     import time
+    import micropython
+
+    # Allow this loop to be stopped via Ctrl-C.
+    micropython.kbd_intr(3)
 
     while 1:
         print(
             """\
-The FAT filesystem starting at sector %d with size %d sectors appears to
-be corrupted. If you had important data there, you may want to make a flash
-snapshot to try to recover it. Otherwise, perform factory reprogramming
-of MicroPython firmware (completely erase flash, followed by firmware
-programming).
+The filesystem starting at sector %d with size %d sectors looks corrupt.
+You may want to make a flash snapshot and try to recover it. Otherwise,
+format it with vfs.VfsLfs2.mkfs(bdev), or completely erase the flash and
+reprogram MicroPython.
 """
-            % (bdev.START_SEC, bdev.blocks)
+            % (bdev.start_sec, bdev.blocks)
         )
         time.sleep(3)
 
@@ -45,17 +48,17 @@ def setup():
     check_bootsec()
     print("Performing initial setup")
     wifi()
-    uos.VfsFat.mkfs(bdev)
-    vfs = uos.VfsFat(bdev)
-    uos.mount(vfs, "/")
+    vfs.VfsLfs2.mkfs(bdev)
+    fs = vfs.VfsLfs2(bdev)
+    vfs.mount(fs, "/")
     with open("boot.py", "w") as f:
         f.write(
             """\
 # This file is executed on every boot (including wake-boot from deepsleep)
 #import esp
 #esp.osdebug(None)
-import uos, machine
-#uos.dupterm(None, 1) # disable REPL on UART(0)
+import os, machine
+#os.dupterm(None, 1) # disable REPL on UART(0)
 import gc
 #import webrepl
 #webrepl.start()

@@ -43,7 +43,7 @@
 static const char pad_spaces[] = "                ";
 static const char pad_zeroes[] = "0000000000000000";
 
-STATIC void plat_print_strn(void *env, const char *str, size_t len) {
+static void plat_print_strn(void *env, const char *str, size_t len) {
     (void)env;
     MP_PLAT_PRINT_STRN(str, len);
 }
@@ -127,7 +127,7 @@ int mp_print_strn(const mp_print_t *print, const char *str, size_t len, int flag
 
 // This function is used exclusively by mp_vprintf to format ints.
 // It needs to be a separate function to mp_print_mp_int, since converting to a mp_int looses the MSB.
-STATIC int mp_print_int(const mp_print_t *print, mp_uint_t x, int sgn, int base, int base_char, int flags, char fill, int width) {
+static int mp_print_int(const mp_print_t *print, mp_uint_t x, int sgn, int base, int base_char, int flags, char fill, int width) {
     char sign = 0;
     if (sgn) {
         if ((mp_int_t)x < 0) {
@@ -484,10 +484,10 @@ int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args) {
                 qstr qst = va_arg(args, qstr);
                 size_t len;
                 const char *str = (const char *)qstr_data(qst, &len);
-                if (prec < 0) {
-                    prec = len;
+                if (prec >= 0 && (size_t)prec < len) {
+                    len = prec;
                 }
-                chrs += mp_print_strn(print, str, prec, flags, fill, width);
+                chrs += mp_print_strn(print, str, len, flags, fill, width);
                 break;
             }
             case 's': {
@@ -499,10 +499,11 @@ int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args) {
                     break;
                 }
                 #endif
-                if (prec < 0) {
-                    prec = strlen(str);
+                size_t len = strlen(str);
+                if (prec >= 0 && (size_t)prec < len) {
+                    len = prec;
                 }
-                chrs += mp_print_strn(print, str, prec, flags, fill, width);
+                chrs += mp_print_strn(print, str, len, flags, fill, width);
                 break;
             }
             case 'd': {
@@ -542,7 +543,7 @@ int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args) {
             case 'g':
             case 'G': {
                 #if ((MICROPY_FLOAT_IMPL == MICROPY_FLOAT_IMPL_FLOAT) || (MICROPY_FLOAT_IMPL == MICROPY_FLOAT_IMPL_DOUBLE))
-                mp_float_t f = va_arg(args, double);
+                mp_float_t f = (mp_float_t)va_arg(args, double);
                 chrs += mp_print_float(print, f, *fmt, flags, fill, width, prec);
                 #else
                 #error Unknown MICROPY FLOAT IMPL
@@ -557,11 +558,9 @@ int mp_vprintf(const mp_print_t *print, const char *fmt, va_list args) {
             case 'l': {
                 unsigned long long int arg_value = va_arg(args, unsigned long long int);
                 ++fmt;
-                if (*fmt == 'u' || *fmt == 'd') {
-                    chrs += mp_print_int(print, arg_value, *fmt == 'd', 10, 'a', flags, fill, width);
-                    break;
-                }
-                assert(!"unsupported fmt char");
+                assert(*fmt == 'u' || *fmt == 'd' || !"unsupported fmt char");
+                chrs += mp_print_int(print, arg_value, *fmt == 'd', 10, 'a', flags, fill, width);
+                break;
             }
             #endif
             default:

@@ -30,7 +30,8 @@
 #define CFG_TUSB_OS             (OPT_OS_NONE)
 
 #define CFG_TUD_CDC             (1)
-#define CFG_TUD_CDC_RX_BUFSIZE  (256)
-#define CFG_TUD_CDC_TX_BUFSIZE  (256)
+#define CFG_TUD_CDC_RX_BUFSIZE  (512)
+#define CFG_TUD_CDC_TX_BUFSIZE  (512)
+#define CFG_TUD_CDC_PERSISTENT_TX_BUFF (1)
 
 #endif // MICROPY_INCLUDED_MIMXRT_TUSB_CONFIG_H

@@ -62,7 +62,7 @@ typedef struct {
     uint8 *pRcvMsgBuff;
     uint8 *pWritePos;
     uint8 *pReadPos;
-    uint8 TrigLvl;      //JLU: may need to pad
+    uint8 TrigLvl;      // JLU: may need to pad
     RcvMsgBuffState BuffState;
 } RcvMsgBuff;
 
@@ -90,7 +90,7 @@ typedef struct {
     TrxMsgBuff trx_buff;
     RcvMsgState rcv_state;
     int received;
-    int buff_uart_no;                //indicate which uart use tx/rx buffer
+    int buff_uart_no;                // indicate which uart use tx/rx buffer
 } UartDevice;
 
 extern uint8 uart_ringbuf_array[UART0_STATIC_RXBUF_LEN];
@@ -101,6 +101,7 @@ bool uart_rx_wait(uint32_t timeout_us);
 int uart_rx_char(void);
 void uart_tx_one_char(uint8 uart, uint8 TxChar);
 void uart_flush(uint8 uart);
+int uart_txdone(uint8 uart);
 void uart_os_config(int uart);
 void uart_setup(uint8 uart);
 int uart0_get_rxbuf_len(void);

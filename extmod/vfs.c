@@ -83,12 +83,8 @@ mp_vfs_mount_t *mp_vfs_lookup_path(const char *path, const char **path_out) {
             }
         }
 
-        // if we get here then there's nothing mounted on /
-
-        if (is_abs) {
-            // path began with / and was not found
-            return MP_VFS_NONE;
-        }
+        // if we get here then there's nothing mounted on /, so the path doesn't exist
+        return MP_VFS_NONE;
     }
 
     // a relative path within a mounted device
@@ -97,18 +93,20 @@ mp_vfs_mount_t *mp_vfs_lookup_path(const char *path, const char **path_out) {
 }
 
 // Version of mp_vfs_lookup_path that takes and returns uPy string objects.
-STATIC mp_vfs_mount_t *lookup_path(mp_obj_t path_in, mp_obj_t *path_out) {
+static mp_vfs_mount_t *lookup_path(mp_obj_t path_in, mp_obj_t *path_out) {
     const char *path = mp_obj_str_get_str(path_in);
     const char *p_out;
     mp_vfs_mount_t *vfs = mp_vfs_lookup_path(path, &p_out);
     if (vfs != MP_VFS_NONE && vfs != MP_VFS_ROOT) {
         *path_out = mp_obj_new_str_of_type(mp_obj_get_type(path_in),
             (const byte *)p_out, strlen(p_out));
+    } else {
+        *path_out = MP_OBJ_NULL;
     }
     return vfs;
 }
 
-STATIC mp_obj_t mp_vfs_proxy_call(mp_vfs_mount_t *vfs, qstr meth_name, size_t n_args, const mp_obj_t *args) {
+static mp_obj_t mp_vfs_proxy_call(mp_vfs_mount_t *vfs, qstr meth_name, size_t n_args, const mp_obj_t *args) {
     assert(n_args <= PROXY_MAX_ARGS);
     if (vfs == MP_VFS_NONE) {
         // mount point not found
@@ -134,13 +132,14 @@ mp_import_stat_t mp_vfs_import_stat(const char *path) {
     }
 
     // If the mounted object has the VFS protocol, call its import_stat helper
-    const mp_vfs_proto_t *proto = mp_obj_get_type(vfs->obj)->protocol;
-    if (proto != NULL) {
+    const mp_obj_type_t *type = mp_obj_get_type(vfs->obj);
+    if (MP_OBJ_TYPE_HAS_SLOT(type, protocol)) {
+        const mp_vfs_proto_t *proto = MP_OBJ_TYPE_GET_SLOT(type, protocol);
         return proto->import_stat(MP_OBJ_TO_PTR(vfs->obj), path_out);
     }
 
     // delegate to vfs.stat() method
-    mp_obj_t path_o = mp_obj_new_str(path_out, strlen(path_out));
+    mp_obj_t path_o = mp_obj_new_str_from_cstr(path_out);
     mp_obj_t stat;
     nlr_buf_t nlr;
     if (nlr_push(&nlr) == 0) {
@@ -160,31 +159,34 @@ mp_import_stat_t mp_vfs_import_stat(const char *path) {
     }
 }
 
-STATIC mp_obj_t mp_vfs_autodetect(mp_obj_t bdev_obj) {
+static mp_obj_t mp_vfs_autodetect(mp_obj_t bdev_obj) {
     #if MICROPY_VFS_LFS1 || MICROPY_VFS_LFS2
     nlr_buf_t nlr;
     if (nlr_push(&nlr) == 0) {
-        mp_obj_t vfs = MP_OBJ_NULL;
+        // The superblock for littlefs is in both block 0 and 1, but block 0 may be erased
+        // or partially written, so search both blocks 0 and 1 for the littlefs signature.
         mp_vfs_blockdev_t blockdev;
         mp_vfs_blockdev_init(&blockdev, bdev_obj);
         uint8_t buf[44];
-        mp_vfs_blockdev_read_ext(&blockdev, 0, 8, sizeof(buf), buf);
-        #if MICROPY_VFS_LFS1
-        if (memcmp(&buf[32], "littlefs", 8) == 0) {
-            // LFS1
-            vfs = mp_type_vfs_lfs1.make_new(&mp_type_vfs_lfs1, 1, 0, &bdev_obj);
-            nlr_pop();
-            return vfs;
+        for (size_t block_num = 0; block_num <= 1; ++block_num) {
+            mp_vfs_blockdev_read_ext(&blockdev, block_num, 8, sizeof(buf), buf);
+            #if MICROPY_VFS_LFS1
+            if (memcmp(&buf[32], "littlefs", 8) == 0) {
+                // LFS1
+                mp_obj_t vfs = MP_OBJ_TYPE_GET_SLOT(&mp_type_vfs_lfs1, make_new)(&mp_type_vfs_lfs1, 1, 0, &bdev_obj);
+                nlr_pop();
+                return vfs;
+            }
+            #endif
+            #if MICROPY_VFS_LFS2
+            if (memcmp(&buf[0], "littlefs", 8) == 0) {
+                // LFS2
+                mp_obj_t vfs = MP_OBJ_TYPE_GET_SLOT(&mp_type_vfs_lfs2, make_new)(&mp_type_vfs_lfs2, 1, 0, &bdev_obj);
+                nlr_pop();
+                return vfs;
+            }
+            #endif
         }
-        #endif
-        #if MICROPY_VFS_LFS2
-        if (memcmp(&buf[0], "littlefs", 8) == 0) {
-            // LFS2
-            vfs = mp_type_vfs_lfs2.make_new(&mp_type_vfs_lfs2, 1, 0, &bdev_obj);
-            nlr_pop();
-            return vfs;
-        }
-        #endif
         nlr_pop();
     } else {
         // Ignore exception (eg block device doesn't support extended readblocks)
@@ -192,10 +194,11 @@ STATIC mp_obj_t mp_vfs_autodetect(mp_obj_t bdev_obj) {
     #endif
 
     #if MICROPY_VFS_FAT
-    return mp_fat_vfs_type.make_new(&mp_fat_vfs_type, 1, 0, &bdev_obj);
+    return MP_OBJ_TYPE_GET_SLOT(&mp_fat_vfs_type, make_new)(&mp_fat_vfs_type, 1, 0, &bdev_obj);
     #endif
 
-    return bdev_obj;
+    // no filesystem found
+    mp_raise_OSError(MP_ENODEV);
 }
 
 mp_obj_t mp_vfs_mount(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
@@ -270,7 +273,7 @@ mp_obj_t mp_vfs_umount(mp_obj_t mnt_in) {
         mnt_str = mp_obj_str_get_data(mnt_in, &mnt_len);
     }
     for (mp_vfs_mount_t **vfsp = &MP_STATE_VM(vfs_mount_table); *vfsp != NULL; vfsp = &(*vfsp)->next) {
-        if ((mnt_str != NULL && !memcmp(mnt_str, (*vfsp)->str, mnt_len + 1)) || (*vfsp)->obj == mnt_in) {
+        if ((mnt_str != NULL && mnt_len == (*vfsp)->len && !memcmp(mnt_str, (*vfsp)->str, mnt_len)) || (*vfsp)->obj == mnt_in) {
             vfs = *vfsp;
             *vfsp = (*vfsp)->next;
             break;
@@ -310,7 +313,7 @@ mp_obj_t mp_vfs_open(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args)
     #if MICROPY_VFS_POSIX
     // If the file is an integer then delegate straight to the POSIX handler
     if (mp_obj_is_small_int(args[ARG_file].u_obj)) {
-        return mp_vfs_posix_file_open(&mp_type_textio, args[ARG_file].u_obj, args[ARG_mode].u_obj);
+        return mp_vfs_posix_file_open(&mp_type_vfs_posix_textio, args[ARG_file].u_obj, args[ARG_mode].u_obj);
     }
     #endif
 
@@ -322,7 +325,6 @@ MP_DEFINE_CONST_FUN_OBJ_KW(mp_vfs_open_obj, 0, mp_vfs_open);
 mp_obj_t mp_vfs_chdir(mp_obj_t path_in) {
     mp_obj_t path_out;
     mp_vfs_mount_t *vfs = lookup_path(path_in, &path_out);
-    MP_STATE_VM(vfs_cur) = vfs;
     if (vfs == MP_VFS_ROOT) {
         // If we change to the root dir and a VFS is mounted at the root then
         // we must change that VFS's current dir to the root dir so that any
@@ -334,9 +336,11 @@ mp_obj_t mp_vfs_chdir(mp_obj_t path_in) {
                 break;
             }
         }
+        vfs = MP_VFS_ROOT;
     } else {
         mp_vfs_proxy_call(vfs, MP_QSTR_chdir, 1, &path_out);
     }
+    MP_STATE_VM(vfs_cur) = vfs;
     return mp_const_none;
 }
 MP_DEFINE_CONST_FUN_OBJ_1(mp_vfs_chdir_obj, mp_vfs_chdir);
@@ -357,7 +361,7 @@ mp_obj_t mp_vfs_getcwd(void) {
     if (!(cwd[0] == '/' && cwd[1] == 0)) {
         vstr_add_str(&vstr, cwd);
     }
-    return mp_obj_new_str_from_vstr(&mp_type_str, &vstr);
+    return mp_obj_new_str_from_vstr(&vstr);
 }
 MP_DEFINE_CONST_FUN_OBJ_0(mp_vfs_getcwd_obj, mp_vfs_getcwd);
 
@@ -372,7 +376,7 @@ typedef struct _mp_vfs_ilistdir_it_t {
     bool is_iter;
 } mp_vfs_ilistdir_it_t;
 
-STATIC mp_obj_t mp_vfs_ilistdir_it_iternext(mp_obj_t self_in) {
+static mp_obj_t mp_vfs_ilistdir_it_iternext(mp_obj_t self_in) {
     mp_vfs_ilistdir_it_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->is_iter) {
         // continue delegating to root dir
@@ -416,8 +420,7 @@ mp_obj_t mp_vfs_ilistdir(size_t n_args, const mp_obj_t *args) {
 
     if (vfs == MP_VFS_ROOT) {
         // list the root directory
-        mp_vfs_ilistdir_it_t *iter = m_new_obj(mp_vfs_ilistdir_it_t);
-        iter->base.type = &mp_type_polymorph_iter;
+        mp_vfs_ilistdir_it_t *iter = mp_obj_malloc(mp_vfs_ilistdir_it_t, &mp_type_polymorph_iter);
         iter->iternext = mp_vfs_ilistdir_it_iternext;
         iter->cur.vfs = MP_STATE_VM(vfs_mount_table);
         iter->is_str = mp_obj_get_type(path_in) == &mp_type_str;
@@ -544,5 +547,8 @@ int mp_vfs_mount_and_chdir_protected(mp_obj_t bdev, mp_obj_t mount_point) {
     }
     return ret;
 }
+
+MP_REGISTER_ROOT_POINTER(struct _mp_vfs_mount_t *vfs_cur);
+MP_REGISTER_ROOT_POINTER(struct _mp_vfs_mount_t *vfs_mount_table);
 
 #endif // MICROPY_VFS

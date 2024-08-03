@@ -29,16 +29,24 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
+#include <fcntl.h>
 
 #include "py/mphal.h"
 #include "py/mpthread.h"
 #include "py/runtime.h"
 #include "extmod/misc.h"
 
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 25)
+#include <sys/random.h>
+#define _HAVE_GETRANDOM
+#endif
+#endif
+
 #ifndef _WIN32
 #include <signal.h>
 
-STATIC void sighandler(int signum) {
+static void sighandler(int signum) {
     if (signum == SIGINT) {
         #if MICROPY_ASYNC_KBD_INTR
         #if MICROPY_PY_THREAD_GIL
@@ -54,11 +62,11 @@ STATIC void sighandler(int signum) {
         sigprocmask(SIG_SETMASK, &mask, NULL);
         nlr_raise(MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception)));
         #else
-        if (MP_STATE_VM(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
+        if (MP_STATE_MAIN_THREAD(mp_pending_exception) == MP_OBJ_FROM_PTR(&MP_STATE_VM(mp_kbd_exception))) {
             // this is the second time we are called, so die straight away
             exit(1);
         }
-        mp_keyboard_interrupt();
+        mp_sched_keyboard_interrupt();
         #endif
     }
 }
@@ -165,10 +173,9 @@ int mp_hal_stdin_rx_chr(void) {
 main_term:;
     #endif
 
-    MP_THREAD_GIL_EXIT();
     unsigned char c;
-    int ret = read(0, &c, 1);
-    MP_THREAD_GIL_ENTER();
+    ssize_t ret;
+    MP_HAL_RETRY_SYSCALL(ret, read(STDIN_FILENO, &c, 1), {});
     if (ret == 0) {
         c = 4; // EOF, ctrl-D
     } else if (c == '\n') {
@@ -177,12 +184,15 @@ main_term:;
     return c;
 }
 
-void mp_hal_stdout_tx_strn(const char *str, size_t len) {
-    MP_THREAD_GIL_EXIT();
-    int ret = write(1, str, len);
-    MP_THREAD_GIL_ENTER();
-    mp_uos_dupterm_tx_strn(str, len);
-    (void)ret; // to suppress compiler warning
+mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
+    ssize_t ret;
+    MP_HAL_RETRY_SYSCALL(ret, write(STDOUT_FILENO, str, len), {});
+    mp_uint_t written = ret < 0 ? 0 : ret;
+    int dupterm_res = mp_os_dupterm_tx_strn(str, len);
+    if (dupterm_res >= 0) {
+        written = MIN((mp_uint_t)dupterm_res, written);
+    }
+    return written;
 }
 
 // cooked is same as uncooked because the terminal does some postprocessing
@@ -194,6 +204,7 @@ void mp_hal_stdout_tx_str(const char *str) {
     mp_hal_stdout_tx_strn(str, strlen(str));
 }
 
+#ifndef mp_hal_ticks_ms
 mp_uint_t mp_hal_ticks_ms(void) {
     #if (defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0) && defined(_POSIX_MONOTONIC_CLOCK)
     struct timespec tv;
@@ -205,7 +216,9 @@ mp_uint_t mp_hal_ticks_ms(void) {
     return tv.tv_sec * 1000 + tv.tv_usec / 1000;
     #endif
 }
+#endif
 
+#ifndef mp_hal_ticks_us
 mp_uint_t mp_hal_ticks_us(void) {
     #if (defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0) && defined(_POSIX_MONOTONIC_CLOCK)
     struct timespec tv;
@@ -215,5 +228,34 @@ mp_uint_t mp_hal_ticks_us(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return tv.tv_sec * 1000000 + tv.tv_usec;
+    #endif
+}
+#endif
+
+#ifndef mp_hal_time_ns
+uint64_t mp_hal_time_ns(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+}
+#endif
+
+#ifndef mp_hal_delay_ms
+void mp_hal_delay_ms(mp_uint_t ms) {
+    mp_uint_t start = mp_hal_ticks_ms();
+    while (mp_hal_ticks_ms() - start < ms) {
+        mp_event_wait_ms(1);
+    }
+}
+#endif
+
+void mp_hal_get_random(size_t n, void *buf) {
+    #ifdef _HAVE_GETRANDOM
+    RAISE_ERRNO(getrandom(buf, n, 0), errno);
+    #else
+    int fd = open("/dev/random", O_RDONLY);
+    RAISE_ERRNO(fd, errno);
+    RAISE_ERRNO(read(fd, buf, n), errno);
+    close(fd);
     #endif
 }

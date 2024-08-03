@@ -29,6 +29,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef _MSC_VER
+#include "py/mpconfig.h" // For inline.
+#endif
+
 typedef struct _ringbuf_t {
     uint8_t *buf;
     uint16_t size;
@@ -59,6 +63,13 @@ static inline int ringbuf_get(ringbuf_t *r) {
     return v;
 }
 
+static inline int ringbuf_peek(ringbuf_t *r) {
+    if (r->iget == r->iput) {
+        return -1;
+    }
+    return r->buf[r->iget];
+}
+
 static inline int ringbuf_put(ringbuf_t *r, uint8_t v) {
     uint32_t iput_new = r->iput + 1;
     if (iput_new >= r->size) {
@@ -84,5 +95,8 @@ static inline size_t ringbuf_avail(ringbuf_t *r) {
 int ringbuf_get16(ringbuf_t *r);
 int ringbuf_peek16(ringbuf_t *r);
 int ringbuf_put16(ringbuf_t *r, uint16_t v);
+
+int ringbuf_get_bytes(ringbuf_t *r, uint8_t *data, size_t data_len);
+int ringbuf_put_bytes(ringbuf_t *r, const uint8_t *data, size_t data_len);
 
 #endif // MICROPY_INCLUDED_PY_RINGBUF_H

@@ -8,6 +8,7 @@ import sys
 import re
 import string
 
+config_prefix = "MICROPY_HW_USB_"
 needed_keys = ("USB_PID_CDC_MSC", "USB_PID_CDC_HID", "USB_PID_CDC", "USB_VID")
 
 
@@ -15,11 +16,11 @@ def parse_usb_ids(filename):
     rv = dict()
     for line in open(filename).readlines():
         line = line.rstrip("\r\n")
-        match = re.match("^#define\s+(\w+)\s+\(0x([0-9A-Fa-f]+)\)$", line)
-        if match and match.group(1).startswith("USBD_"):
-            key = match.group(1).replace("USBD", "USB")
+        match = re.match(r"^#define\s+(\w+)\s+\(0x([0-9A-Fa-f]+)\)$", line)
+        if match and match.group(1).startswith(config_prefix):
+            key = match.group(1).replace(config_prefix, "USB_")
             val = match.group(2)
-            print("key =", key, "val =", val)
+            # print("key =", key, "val =", val)
             if key in needed_keys:
                 rv[key] = val
     for k in needed_keys:

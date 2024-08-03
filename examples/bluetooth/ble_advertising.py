@@ -1,5 +1,9 @@
 # Helpers for generating BLE advertising payloads.
 
+# A more fully-featured (and easier to use) version of this is implemented in
+# aioble. This code is provided just as a basic example. See
+# https://github.com/micropython/micropython-lib/tree/master/micropython/bluetooth/aioble
+
 from micropython import const
 import struct
 import bluetooth
@@ -19,6 +23,8 @@ _ADV_TYPE_UUID32_MORE = const(0x4)
 _ADV_TYPE_UUID128_MORE = const(0x6)
 _ADV_TYPE_APPEARANCE = const(0x19)
 
+_ADV_MAX_PAYLOAD = const(31)
+
 
 # Generate a payload to be passed to gap_advertise(adv_data=...).
 def advertising_payload(limited_disc=False, br_edr=False, name=None, services=None, appearance=0):
@@ -30,7 +36,7 @@ def advertising_payload(limited_disc=False, br_edr=False, name=None, services=No
 
     _append(
         _ADV_TYPE_FLAGS,
-        struct.pack("B", (0x01 if limited_disc else 0x02) + (0x00 if br_edr else 0x04)),
+        struct.pack("B", (0x01 if limited_disc else 0x02) + (0x18 if br_edr else 0x04)),
     )
 
     if name:
@@ -47,7 +53,11 @@ def advertising_payload(limited_disc=False, br_edr=False, name=None, services=No
                 _append(_ADV_TYPE_UUID128_COMPLETE, b)
 
     # See org.bluetooth.characteristic.gap.appearance.xml
-    _append(_ADV_TYPE_APPEARANCE, struct.pack("<h", appearance))
+    if appearance:
+        _append(_ADV_TYPE_APPEARANCE, struct.pack("<h", appearance))
+
+    if len(payload) > _ADV_MAX_PAYLOAD:
+        raise ValueError("advertising payload too large")
 
     return payload
 

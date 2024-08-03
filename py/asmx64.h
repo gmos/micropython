@@ -61,10 +61,13 @@
 
 // condition codes, used for jcc and setcc (despite their j-name!)
 #define ASM_X64_CC_JB  (0x2) // below, unsigned
+#define ASM_X64_CC_JAE (0x3) // above or equal, unsigned
 #define ASM_X64_CC_JZ  (0x4)
 #define ASM_X64_CC_JE  (0x4)
 #define ASM_X64_CC_JNZ (0x5)
 #define ASM_X64_CC_JNE (0x5)
+#define ASM_X64_CC_JBE (0x6) // below or equal, unsigned
+#define ASM_X64_CC_JA  (0x7) // above, unsigned
 #define ASM_X64_CC_JL  (0xc) // less, signed
 #define ASM_X64_CC_JGE (0xd) // greater or equal, signed
 #define ASM_X64_CC_JLE (0xe) // less or equal, signed
@@ -94,10 +97,13 @@ void asm_x64_mov_mem8_to_r64zx(asm_x64_t *as, int src_r64, int src_disp, int des
 void asm_x64_mov_mem16_to_r64zx(asm_x64_t *as, int src_r64, int src_disp, int dest_r64);
 void asm_x64_mov_mem32_to_r64zx(asm_x64_t *as, int src_r64, int src_disp, int dest_r64);
 void asm_x64_mov_mem64_to_r64(asm_x64_t *as, int src_r64, int src_disp, int dest_r64);
+void asm_x64_not_r64(asm_x64_t *as, int dest_r64);
+void asm_x64_neg_r64(asm_x64_t *as, int dest_r64);
 void asm_x64_and_r64_r64(asm_x64_t *as, int dest_r64, int src_r64);
 void asm_x64_or_r64_r64(asm_x64_t *as, int dest_r64, int src_r64);
 void asm_x64_xor_r64_r64(asm_x64_t *as, int dest_r64, int src_r64);
 void asm_x64_shl_r64_cl(asm_x64_t *as, int dest_r64);
+void asm_x64_shr_r64_cl(asm_x64_t *as, int dest_r64);
 void asm_x64_sar_r64_cl(asm_x64_t *as, int dest_r64);
 void asm_x64_add_r64_r64(asm_x64_t *as, int dest_r64, int src_r64);
 void asm_x64_sub_r64_r64(asm_x64_t *as, int dest_r64, int src_r64);
@@ -182,14 +188,15 @@ void asm_x64_call_ind(asm_x64_t *as, size_t fun_id, int temp_r32);
 
 #define ASM_MOV_LOCAL_REG(as, local_num, reg_src) asm_x64_mov_r64_to_local((as), (reg_src), (local_num))
 #define ASM_MOV_REG_IMM(as, reg_dest, imm) asm_x64_mov_i64_to_r64_optimised((as), (imm), (reg_dest))
-#define ASM_MOV_REG_IMM_FIX_U16(as, reg_dest, imm) asm_x64_mov_i32_to_r64((as), (imm), (reg_dest))
-#define ASM_MOV_REG_IMM_FIX_WORD(as, reg_dest, imm) asm_x64_mov_i32_to_r64((as), (imm), (reg_dest))
 #define ASM_MOV_REG_LOCAL(as, reg_dest, local_num) asm_x64_mov_local_to_r64((as), (local_num), (reg_dest))
 #define ASM_MOV_REG_REG(as, reg_dest, reg_src) asm_x64_mov_r64_r64((as), (reg_dest), (reg_src))
 #define ASM_MOV_REG_LOCAL_ADDR(as, reg_dest, local_num) asm_x64_mov_local_addr_to_r64((as), (local_num), (reg_dest))
 #define ASM_MOV_REG_PCREL(as, reg_dest, label) asm_x64_mov_reg_pcrel((as), (reg_dest), (label))
 
+#define ASM_NOT_REG(as, reg) asm_x64_not_r64((as), (reg))
+#define ASM_NEG_REG(as, reg) asm_x64_neg_r64((as), (reg))
 #define ASM_LSL_REG(as, reg) asm_x64_shl_r64_cl((as), (reg))
+#define ASM_LSR_REG(as, reg) asm_x64_shr_r64_cl((as), (reg))
 #define ASM_ASR_REG(as, reg) asm_x64_sar_r64_cl((as), (reg))
 #define ASM_OR_REG_REG(as, reg_dest, reg_src) asm_x64_or_r64_r64((as), (reg_dest), (reg_src))
 #define ASM_XOR_REG_REG(as, reg_dest, reg_src) asm_x64_xor_r64_r64((as), (reg_dest), (reg_src))
@@ -202,6 +209,7 @@ void asm_x64_call_ind(asm_x64_t *as, size_t fun_id, int temp_r32);
 #define ASM_LOAD_REG_REG_OFFSET(as, reg_dest, reg_base, word_offset) asm_x64_mov_mem64_to_r64((as), (reg_base), 8 * (word_offset), (reg_dest))
 #define ASM_LOAD8_REG_REG(as, reg_dest, reg_base) asm_x64_mov_mem8_to_r64zx((as), (reg_base), 0, (reg_dest))
 #define ASM_LOAD16_REG_REG(as, reg_dest, reg_base) asm_x64_mov_mem16_to_r64zx((as), (reg_base), 0, (reg_dest))
+#define ASM_LOAD16_REG_REG_OFFSET(as, reg_dest, reg_base, uint16_offset) asm_x64_mov_mem16_to_r64zx((as), (reg_base), 2 * (uint16_offset), (reg_dest))
 #define ASM_LOAD32_REG_REG(as, reg_dest, reg_base) asm_x64_mov_mem32_to_r64zx((as), (reg_base), 0, (reg_dest))
 
 #define ASM_STORE_REG_REG(as, reg_src, reg_base) asm_x64_mov_r64_to_mem64((as), (reg_src), (reg_base), 0)
